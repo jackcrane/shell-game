@@ -11,8 +11,14 @@ const GAME_MIN_ROWS = 37;
 const MENU_MIN_COLS = 60;
 const MENU_MIN_ROWS = 22;
 const CELL_WIDTH = 6;
-const BORDER_COLOR = "90";
+const BORDER_COLOR = "2;37";
+const CANDIDATE_COLOR = "37";
 const DIGIT_COLOR = "30";
+const FOCUSED_CELL_COLOR = "47";
+const SELECTED_DIGIT_COLOR = `${DIGIT_COLOR};${FOCUSED_CELL_COLOR}`;
+const SELECTED_CONFLICT_COLOR = `1;31;${FOCUSED_CELL_COLOR}`;
+const SELECTED_CANDIDATE_COLOR = `${CANDIDATE_COLOR};${FOCUSED_CELL_COLOR}`;
+const CONFLICT_COLOR = "1;31";
 const MENU_TITLE = [
   "███████╗██╗   ██╗██████╗  ██████╗ ██╗  ██╗██╗   ██╗",
   "██╔════╝██║   ██║██╔══██╗██╔═══██╗██║ ██╔╝██║   ██║",
@@ -26,15 +32,15 @@ const MENU_TITLE = [
 ];
 const EMPTY_CELL_ART = ["      ", "      ", "      "];
 const DIGIT_ART = {
-  "1": ["╺┓ ", " ┃ ", "╺┻╸"],
-  "2": ["┏━┓", "┏━┛", "┗━╸"],
-  "3": ["┏━┓", "╺━┫", "┗━┛"],
-  "4": ["╻ ╻", "┗━┫", "  ╹"],
-  "5": ["┏━╸", "┗━┓", "┗━┛"],
-  "6": ["┏━┓", "┣━┓", "┗━┛"],
-  "7": ["┏━┓", "  ┃", "  ╹"],
-  "8": ["┏━┓", "┣━┫", "┗━┛"],
-  "9": ["┏━┓", "┗━┫", "┗━┛"],
+  1: ["╺┓ ", " ┃ ", "╺┻╸"],
+  2: ["┏━┓", "┏━┛", "┗━╸"],
+  3: ["┏━┓", "╺━┫", "┗━┛"],
+  4: ["╻ ╻", "┗━┫", "  ╹"],
+  5: ["┏━╸", "┗━┓", "┗━┛"],
+  6: ["┏━┓", "┣━┓", "┗━┛"],
+  7: ["┏━┓", "  ┃", "  ╹"],
+  8: ["┏━┓", "┣━┫", "┗━┛"],
+  9: ["┏━┓", "┗━┫", "┗━┛"],
 };
 const colorBorder = (text) => color(text, BORDER_COLOR);
 const centerArtLine = (line) => ` ${line}  `;
@@ -49,6 +55,34 @@ const CENTERED_DIGIT_ART = Object.fromEntries(
 const createCell = (value) => (value === "-" ? "" : value);
 
 const toBoard = (sequence) => sequence.split("").map(createCell);
+
+const getCandidatesForCell = (board, index) => {
+  if (board[index]) {
+    return [];
+  }
+
+  const row = Math.floor(index / 9);
+  const col = index % 9;
+  const used = new Set();
+
+  for (let step = 0; step < 9; step += 1) {
+    used.add(board[row * 9 + step]);
+    used.add(board[step * 9 + col]);
+  }
+
+  const boxRow = Math.floor(row / 3) * 3;
+  const boxCol = Math.floor(col / 3) * 3;
+
+  for (let rowOffset = 0; rowOffset < 3; rowOffset += 1) {
+    for (let colOffset = 0; colOffset < 3; colOffset += 1) {
+      used.add(board[(boxRow + rowOffset) * 9 + boxCol + colOffset]);
+    }
+  }
+
+  return ["1", "2", "3", "4", "5", "6", "7", "8", "9"].filter(
+    (digit) => !used.has(digit),
+  );
+};
 
 const buildConflicts = (board, lockedCells) => {
   const conflicts = new Set();
@@ -201,26 +235,21 @@ const buildHorizontalBorder = ({ left, minor, major, right, fill }) => {
   return line;
 };
 
-const getCellColorCode = ({
-  conflicts,
-  cursor,
-  index,
-  value,
-}) => {
+const getCellColorCode = ({ conflicts, cursor, index, value }) => {
   if (index === cursor && conflicts.has(index)) {
-    return "1;31;47";
+    return SELECTED_CONFLICT_COLOR;
   }
 
   if (index === cursor && value) {
-    return `${DIGIT_COLOR};47`;
+    return SELECTED_DIGIT_COLOR;
   }
 
   if (index === cursor) {
-    return `${DIGIT_COLOR};47`;
+    return SELECTED_DIGIT_COLOR;
   }
 
   if (conflicts.has(index)) {
-    return "1;31";
+    return CONFLICT_COLOR;
   }
 
   if (value) {
@@ -230,26 +259,61 @@ const getCellColorCode = ({
   return "0";
 };
 
+const getCandidateColorCode = ({ cursor, index }) => {
+  if (index === cursor) {
+    return SELECTED_CANDIDATE_COLOR;
+  }
+
+  return CANDIDATE_COLOR;
+};
+
 const getRenderedCellLines = ({
   board,
   conflicts,
   cursor,
   index,
   lockedCells,
+  showCandidates,
 }) => {
   const value = board[index];
-  const art = CENTERED_DIGIT_ART[value] ?? EMPTY_CELL_ART;
-  const colorCode = getCellColorCode({
-    conflicts,
-    cursor,
-    index,
-    value,
-  });
+  const isCandidateCell = !value && showCandidates;
+  const art = value
+    ? CENTERED_DIGIT_ART[value]
+    : isCandidateCell
+      ? buildCandidateArt(getCandidatesForCell(board, index))
+      : EMPTY_CELL_ART;
+  const colorCode = isCandidateCell
+    ? getCandidateColorCode({ cursor, index })
+    : getCellColorCode({
+        conflicts,
+        cursor,
+        index,
+        value,
+      });
 
   return art.map((line) => color(line, colorCode));
 };
 
-const buildBoardLines = ({ board, conflicts, cursor, lockedCells }) => {
+const buildCandidateArt = (candidates) => {
+  const values = Array.from({ length: 9 }, (_, index) => {
+    const digit = String(index + 1);
+    return candidates.includes(digit) ? digit : " ";
+  });
+
+  return [
+    `${values[0]} ${values[1]} ${values[2]} `,
+    `${values[3]} ${values[4]} ${values[5]} `,
+    `${values[6]} ${values[7]} ${values[8]} `,
+  ];
+};
+
+const buildBoardLines = ({
+  board,
+  conflicts,
+  cursor,
+  lockedCells,
+  showCandidates,
+}) => {
   const lines = [
     buildHorizontalBorder({
       left: "┏",
@@ -271,6 +335,7 @@ const buildBoardLines = ({ board, conflicts, cursor, lockedCells }) => {
         cursor,
         index,
         lockedCells,
+        showCandidates,
       });
 
       for (let lineIndex = 0; lineIndex < 3; lineIndex += 1) {
@@ -337,6 +402,7 @@ const buildControlLines = () => [
   "",
   "Move:  arrows / hjkl",
   "Fill:  1-9",
+  "Cand:  c",
   "Clear: 0 . backspace",
   "Reset: r",
   "New:   n",
@@ -355,6 +421,7 @@ export const createGameSession = ({
 }) => {
   let termSize = initialTermSize;
   let cursor = 0;
+  let showCandidates = false;
   let puzzleState = null;
   let difficultyMenu = {
     active: true,
@@ -365,6 +432,7 @@ export const createGameSession = ({
   const resetPuzzle = (difficulty) => {
     puzzleState = createPuzzleState(difficulty);
     cursor = 0;
+    showCandidates = false;
   };
 
   const openDifficultyMenu = ({
@@ -395,7 +463,10 @@ export const createGameSession = ({
     const requiredCols = difficultyMenu.active ? MENU_MIN_COLS : GAME_MIN_COLS;
     const requiredRows = difficultyMenu.active ? MENU_MIN_ROWS : GAME_MIN_ROWS;
 
-    if ((termSize?.cols ?? 0) < requiredCols || (termSize?.rows ?? 0) < requiredRows) {
+    if (
+      (termSize?.cols ?? 0) < requiredCols ||
+      (termSize?.rows ?? 0) < requiredRows
+    ) {
       renderCentered(stream, termSize, [
         color("Terminal too small", "1;31"),
         "",
@@ -412,9 +483,7 @@ export const createGameSession = ({
         const selected = index === difficultyMenu.selectedIndex;
         const label = difficulty[0].toUpperCase() + difficulty.slice(1);
 
-        return selected
-          ? color(`> ${label}`, "1;30;47")
-          : `  ${label}`;
+        return selected ? color(`> ${label}`, "1;30;47") : `  ${label}`;
       });
 
       renderCentered(stream, termSize, [
@@ -430,7 +499,13 @@ export const createGameSession = ({
 
     const { board, lockedCells } = puzzleState;
     const conflicts = buildConflicts(board, lockedCells);
-    const boardLines = buildBoardLines({ board, conflicts, cursor, lockedCells });
+    const boardLines = buildBoardLines({
+      board,
+      conflicts,
+      cursor,
+      lockedCells,
+      showCandidates,
+    });
     const controlLines = buildControlLines();
 
     const lines = joinColumns(boardLines, controlLines);
@@ -519,6 +594,10 @@ export const createGameSession = ({
         break;
       case "r":
         puzzleState.board = [...puzzleState.initialBoard];
+        break;
+      case "c":
+      case "C":
+        showCandidates = !showCandidates;
         break;
       case "n":
         openDifficultyMenu({
