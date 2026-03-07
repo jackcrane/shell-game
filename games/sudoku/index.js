@@ -208,7 +208,7 @@ const getCellColorCode = ({
   value,
 }) => {
   if (index === cursor && conflicts.has(index)) {
-    return `${DIGIT_COLOR};41`;
+    return "1;31;47";
   }
 
   if (index === cursor && value) {
@@ -220,7 +220,7 @@ const getCellColorCode = ({
   }
 
   if (conflicts.has(index)) {
-    return `${DIGIT_COLOR};41`;
+    return "1;31";
   }
 
   if (value) {
