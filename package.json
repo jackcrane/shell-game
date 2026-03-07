@@ -4,8 +4,7 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "version:patch": "node scripts/bump-version.mjs"
+    "start": "node server.js"
   },
   "dependencies": {
     "ssh2": "^1.16.0",

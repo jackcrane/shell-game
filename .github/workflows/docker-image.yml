@@ -29,4 +29,4 @@ jobs:
         with:
           context: .
           push: true
-          tags: jackcranee/ssh-games:0.0.1
+          tags: jackcranee/ssh-games:latest
