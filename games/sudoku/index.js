@@ -1,8 +1,12 @@
 import { getSudoku } from "sudoku-gen";
-import { color, renderCentered } from "../../lib/session-ui.js";
+import {
+  color,
+  getVisibleWidth,
+  renderCentered,
+} from "../../lib/session-ui.js";
 
 const DIFFICULTIES = ["easy", "medium", "hard", "expert"];
-const MIN_COLS = 58;
+const MIN_COLS = 72;
 const MIN_ROWS = 22;
 const MENU_MIN_COLS = 60;
 const MENU_TITLE = [
@@ -20,40 +24,6 @@ const MENU_TITLE = [
 const createCell = (value) => (value === "-" ? "" : value);
 
 const toBoard = (sequence) => sequence.split("").map(createCell);
-
-const formatPosition = (index) => {
-  const row = Math.floor(index / 9) + 1;
-  const col = (index % 9) + 1;
-  return `r${row}c${col}`;
-};
-
-const getCandidates = (board, index) => {
-  if (board[index]) {
-    return [];
-  }
-
-  const row = Math.floor(index / 9);
-  const col = index % 9;
-  const used = new Set();
-
-  for (let step = 0; step < 9; step += 1) {
-    used.add(board[row * 9 + step]);
-    used.add(board[step * 9 + col]);
-  }
-
-  const boxRow = Math.floor(row / 3) * 3;
-  const boxCol = Math.floor(col / 3) * 3;
-
-  for (let rowOffset = 0; rowOffset < 3; rowOffset += 1) {
-    for (let colOffset = 0; colOffset < 3; colOffset += 1) {
-      used.add(board[(boxRow + rowOffset) * 9 + boxCol + colOffset]);
-    }
-  }
-
-  return ["1", "2", "3", "4", "5", "6", "7", "8", "9"].filter(
-    (digit) => !used.has(digit),
-  );
-};
 
 const buildConflicts = (board, lockedCells) => {
   const conflicts = new Set();
@@ -166,7 +136,27 @@ const createPuzzleState = (difficulty) => {
   };
 };
 
-const getCompletionCount = (board) => board.filter(Boolean).length;
+const padVisibleEnd = (text, targetWidth) => {
+  const visibleWidth = getVisibleWidth(text);
+  return `${text}${" ".repeat(Math.max(0, targetWidth - visibleWidth))}`;
+};
+
+const joinColumns = (leftLines, rightLines, gap = "    ") => {
+  const leftWidth = leftLines.reduce(
+    (max, line) => Math.max(max, getVisibleWidth(line)),
+    0,
+  );
+  const lineCount = Math.max(leftLines.length, rightLines.length);
+  const lines = [];
+
+  for (let index = 0; index < lineCount; index += 1) {
+    const leftLine = leftLines[index] ?? "";
+    const rightLine = rightLines[index] ?? "";
+    lines.push(`${padVisibleEnd(leftLine, leftWidth)}${gap}${rightLine}`);
+  }
+
+  return lines;
+};
 
 const buildBoardLines = ({ board, conflicts, cursor, lockedCells }) => {
   const lines = ["    1 2 3   4 5 6   7 8 9", "  +-------+-------+-------+"];
@@ -214,6 +204,18 @@ const buildBoardLines = ({ board, conflicts, cursor, lockedCells }) => {
   return lines;
 };
 
+const buildControlLines = () => [
+  color("Controls", "1;36"),
+  "",
+  "Move:  arrows / hjkl",
+  "Fill:  1-9",
+  "Clear: 0 . backspace",
+  "Reset: r",
+  "New:   n",
+  "Diff:  d",
+  "Quit:  q",
+];
+
 export const metadata = {
   description: "Interactive Sudoku served over SSH.",
 };
@@ -225,7 +227,6 @@ export const createGameSession = ({
 }) => {
   let termSize = initialTermSize;
   let cursor = 0;
-  let lastMessage = "Use arrows or hjkl to move. Type 1-9 to fill a square.";
   let puzzleState = null;
   let difficultyMenu = {
     active: true,
@@ -260,7 +261,6 @@ export const createGameSession = ({
     const difficulty = DIFFICULTIES[difficultyMenu.selectedIndex] ?? "medium";
     resetPuzzle(difficulty);
     closeDifficultyMenu();
-    updateMessage(`New ${puzzleState.difficulty} puzzle ready.`);
   };
 
   const render = () => {
@@ -301,61 +301,34 @@ export const createGameSession = ({
       return;
     }
 
-    const { board, difficulty, lockedCells, solution } = puzzleState;
+    const { board, lockedCells } = puzzleState;
     const conflicts = buildConflicts(board, lockedCells);
-    const isSolved = board.every((value, index) => value === solution[index]);
-    const completionCount = getCompletionCount(board);
-    const candidates = getCandidates(board, cursor);
+    const boardLines = buildBoardLines({ board, conflicts, cursor, lockedCells });
+    const controlLines = buildControlLines();
 
-    const lines = [
-      color("Sudoku", "1;33"),
-      "",
-      `Difficulty: ${difficulty}   Filled: ${completionCount}/81   Conflicts: ${conflicts.size}`,
-      `Selected: ${formatPosition(cursor)}   Candidates: ${candidates.join(" ") || "-"}`,
-      "",
-      ...buildBoardLines({ board, conflicts, cursor, lockedCells }),
-      "",
-      isSolved
-        ? color("Solved. Press n for a new puzzle, d to change difficulty, or q to quit.", "1;32")
-        : lastMessage,
-      "Controls: arrows/hjkl move, 1-9 fill, 0/. or Backspace clear, r reset, n new, d difficulty menu, q quit",
-    ];
+    const lines = joinColumns(boardLines, controlLines);
 
     renderCentered(stream, termSize, lines);
   };
 
-  const updateMessage = (message) => {
-    lastMessage = message;
-  };
-
   const writeDigit = (digit) => {
     if (puzzleState.lockedCells[cursor]) {
-      updateMessage("Clue cells are fixed.");
       return;
     }
 
     puzzleState.board[cursor] = digit;
-
-    if (puzzleState.board.every((value, index) => value === puzzleState.solution[index])) {
-      updateMessage("Puzzle solved.");
-    } else {
-      updateMessage(`Placed ${digit} at ${formatPosition(cursor)}.`);
-    }
   };
 
   const clearDigit = () => {
     if (puzzleState.lockedCells[cursor]) {
-      updateMessage("Clue cells are fixed.");
       return;
     }
 
     if (!puzzleState.board[cursor]) {
-      updateMessage(`Cell ${formatPosition(cursor)} is already empty.`);
       return;
     }
 
     puzzleState.board[cursor] = "";
-    updateMessage(`Cleared ${formatPosition(cursor)}.`);
   };
 
   const moveDifficultySelection = (delta) => {
@@ -404,26 +377,21 @@ export const createGameSession = ({
       case "ESC[A":
       case "k":
         cursor = moveSelection(cursor, -1, 0);
-        updateMessage(`Moved to ${formatPosition(cursor)}.`);
         break;
       case "ESC[B":
       case "j":
         cursor = moveSelection(cursor, 1, 0);
-        updateMessage(`Moved to ${formatPosition(cursor)}.`);
         break;
       case "ESC[C":
       case "l":
         cursor = moveSelection(cursor, 0, 1);
-        updateMessage(`Moved to ${formatPosition(cursor)}.`);
         break;
       case "ESC[D":
       case "h":
         cursor = moveSelection(cursor, 0, -1);
-        updateMessage(`Moved to ${formatPosition(cursor)}.`);
         break;
       case "r":
         puzzleState.board = [...puzzleState.initialBoard];
-        updateMessage("Puzzle reset.");
         break;
       case "n":
         openDifficultyMenu({
