@@ -1,5 +1,6 @@
 import { getSudoku } from "sudoku-gen";
 import {
+  ansiStyle,
   color,
   getTerminalSize,
   getVisibleWidth,
@@ -13,16 +14,41 @@ const GAME_MIN_ROWS = 37;
 const MENU_MIN_COLS = 60;
 const MENU_MIN_ROWS = 22;
 const CELL_WIDTH = 6;
-const MINOR_BORDER_COLOR = "2;37";
-const MAJOR_BORDER_COLOR = "30";
-const CANDIDATE_COLOR = "33";
-const DIGIT_COLOR = "30";
-const LOCKED_DIGIT_COLOR = "34";
-const FOCUSED_CELL_COLOR = "47";
-const SELECTED_DIGIT_COLOR = `${DIGIT_COLOR};${FOCUSED_CELL_COLOR}`;
-const SELECTED_CONFLICT_COLOR = `1;31;${FOCUSED_CELL_COLOR}`;
-const SELECTED_CANDIDATE_COLOR = `${CANDIDATE_COLOR};${FOCUSED_CELL_COLOR}`;
-const CONFLICT_COLOR = "1;31";
+const THEMES = {
+  light: {
+    name: "Light",
+    baseStyle: "38;5;232;48;2;255;255;255",
+    title: "1;38;5;31",
+    sectionTitle: "1;38;5;130",
+    minorBorder: "38;5;246",
+    majorBorder: "38;5;238",
+    candidate: "38;5;130",
+    digit: "38;5;232",
+    lockedDigit: "38;5;25",
+    selectedBackground: "48;5;252",
+    conflict: "1;38;5;160",
+    menuSelected: "1;38;5;232;48;5;252",
+    modalFrame: "38;5;232;48;5;252",
+    modalTitle: "1;38;5;232;48;5;252",
+  },
+  dark: {
+    name: "Dark",
+    baseStyle: "38;5;252;48;2;0;0;0",
+    title: "1;38;5;117",
+    sectionTitle: "1;38;5;221",
+    minorBorder: "38;5;240",
+    majorBorder: "38;5;250",
+    candidate: "38;5;221",
+    digit: "38;5;255",
+    lockedDigit: "38;5;117",
+    selectedBackground: "48;5;239",
+    conflict: "1;38;5;203",
+    menuSelected: "1;38;5;255;48;5;239",
+    modalFrame: "38;5;255;48;5;239",
+    modalTitle: "1;38;5;255;48;5;239",
+  },
+};
+const THEME_ORDER = ["light", "dark"];
 const MENU_TITLE = [
   "███████╗██╗   ██╗██████╗  ██████╗ ██╗  ██╗██╗   ██╗",
   "██╔════╝██║   ██║██╔══██╗██╔═══██╗██║ ██╔╝██║   ██║",
@@ -46,8 +72,6 @@ const DIGIT_ART = {
   8: ["┏━┓", "┣━┫", "┗━┛"],
   9: ["┏━┓", "┗━┫", "┗━┛"],
 };
-const colorBorder = (text, weight = "minor") =>
-  color(text, weight === "major" ? MAJOR_BORDER_COLOR : MINOR_BORDER_COLOR);
 const centerArtLine = (line) => ` ${line}  `;
 
 const CENTERED_DIGIT_ART = Object.fromEntries(
@@ -56,6 +80,14 @@ const CENTERED_DIGIT_ART = Object.fromEntries(
     lines.map(centerArtLine),
   ]),
 );
+
+const createPainter = (theme) => {
+  const themeReset = ansiStyle(theme.baseStyle);
+  return (text, code) => color(text, code, themeReset);
+};
+
+const colorBorder = (paint, theme, text, weight = "minor") =>
+  paint(text, weight === "major" ? theme.majorBorder : theme.minorBorder);
 
 const createCell = (value) => (value === "-" ? "" : value);
 
@@ -190,6 +222,8 @@ const joinColumns = (leftLines, rightLines, gap = "    ") => {
 };
 
 const buildHorizontalBorder = ({
+  paint,
+  theme,
   left,
   minor,
   major,
@@ -201,17 +235,17 @@ const buildHorizontalBorder = ({
   rightWeight = "major",
   fillWeight = "minor",
 }) => {
-  let line = colorBorder(left, leftWeight);
+  let line = colorBorder(paint, theme, left, leftWeight);
 
   for (let col = 0; col < 9; col += 1) {
-    line += colorBorder(fill.repeat(CELL_WIDTH), fillWeight);
+    line += colorBorder(paint, theme, fill.repeat(CELL_WIDTH), fillWeight);
 
     if (col === 8) {
-      line += colorBorder(right, rightWeight);
+      line += colorBorder(paint, theme, right, rightWeight);
     } else if ((col + 1) % 3 === 0) {
-      line += colorBorder(major, majorWeight);
+      line += colorBorder(paint, theme, major, majorWeight);
     } else {
-      line += colorBorder(minor, minorWeight);
+      line += colorBorder(paint, theme, minor, minorWeight);
     }
   }
 
@@ -226,41 +260,45 @@ const getCellColorCode = ({
   cursor,
   index,
   lockedCells,
+  theme,
   value,
 }) => {
+  const selectedDigitColor = `${theme.digit};${theme.selectedBackground}`;
+  const selectedConflictColor = `${theme.conflict};${theme.selectedBackground}`;
+
   if (index === cursor && conflicts.has(index)) {
-    return SELECTED_CONFLICT_COLOR;
+    return selectedConflictColor;
   }
 
   if (index === cursor && value) {
-    return SELECTED_DIGIT_COLOR;
+    return selectedDigitColor;
   }
 
   if (index === cursor) {
-    return SELECTED_DIGIT_COLOR;
+    return selectedDigitColor;
   }
 
   if (conflicts.has(index)) {
-    return CONFLICT_COLOR;
+    return theme.conflict;
   }
 
   if (lockedCells[index]) {
-    return LOCKED_DIGIT_COLOR;
+    return theme.lockedDigit;
   }
 
   if (value) {
-    return DIGIT_COLOR;
+    return theme.digit;
   }
 
-  return "0";
+  return theme.baseStyle;
 };
 
-const getCandidateColorCode = ({ cursor, index }) => {
+const getCandidateColorCode = ({ cursor, index, theme }) => {
   if (index === cursor) {
-    return SELECTED_CANDIDATE_COLOR;
+    return `${theme.candidate};${theme.selectedBackground}`;
   }
 
-  return CANDIDATE_COLOR;
+  return theme.candidate;
 };
 
 const getRenderedCellLines = ({
@@ -269,7 +307,9 @@ const getRenderedCellLines = ({
   cursor,
   index,
   lockedCells,
+  paint,
   showCandidates,
+  theme,
 }) => {
   const value = board[index];
   const isCandidateCell = !value && showCandidates;
@@ -279,16 +319,17 @@ const getRenderedCellLines = ({
       ? buildCandidateArt(getCandidatesForCell(board, index))
       : EMPTY_CELL_ART;
   const colorCode = isCandidateCell
-    ? getCandidateColorCode({ cursor, index })
+    ? getCandidateColorCode({ cursor, index, theme })
     : getCellColorCode({
         conflicts,
         cursor,
         index,
         lockedCells,
+        theme,
         value,
       });
 
-  return art.map((line) => color(line, colorCode));
+  return art.map((line) => paint(line, colorCode));
 };
 
 const buildCandidateArt = (candidates) => {
@@ -309,10 +350,14 @@ const buildBoardLines = ({
   conflicts,
   cursor,
   lockedCells,
+  paint,
   showCandidates,
+  theme,
 }) => {
   const lines = [
     buildHorizontalBorder({
+      paint,
+      theme,
       left: "┏",
       minor: "┯",
       major: "┳",
@@ -334,7 +379,9 @@ const buildBoardLines = ({
         cursor,
         index,
         lockedCells,
+        paint,
         showCandidates,
+        theme,
       });
 
       for (let lineIndex = 0; lineIndex < 3; lineIndex += 1) {
@@ -343,17 +390,17 @@ const buildBoardLines = ({
     }
 
     for (let lineIndex = 0; lineIndex < 3; lineIndex += 1) {
-      let line = colorBorder("┃", "major");
+      let line = colorBorder(paint, theme, "┃", "major");
 
       for (let col = 0; col < 9; col += 1) {
         line += renderedRow[lineIndex][col];
 
         if (col === 8) {
-          line += colorBorder("┃", "major");
+          line += colorBorder(paint, theme, "┃", "major");
         } else if ((col + 1) % 3 === 0) {
-          line += colorBorder("┃", "major");
+          line += colorBorder(paint, theme, "┃", "major");
         } else {
-          line += colorBorder("│");
+          line += colorBorder(paint, theme, "│");
         }
       }
 
@@ -363,6 +410,8 @@ const buildBoardLines = ({
     if (row === 8) {
       lines.push(
         buildHorizontalBorder({
+          paint,
+          theme,
           left: "┗",
           minor: "┷",
           major: "┻",
@@ -375,6 +424,8 @@ const buildBoardLines = ({
     } else if ((row + 1) % 3 === 0) {
       lines.push(
         buildHorizontalBorder({
+          paint,
+          theme,
           left: "┣",
           minor: "╋",
           major: "╋",
@@ -387,6 +438,8 @@ const buildBoardLines = ({
     } else {
       lines.push(
         buildHorizontalBorder({
+          paint,
+          theme,
           left: "┠",
           minor: "┼",
           major: "╂",
@@ -400,8 +453,8 @@ const buildBoardLines = ({
   return lines;
 };
 
-const buildControlLines = () => [
-  color("Controls", "1;36"),
+const buildControlLines = (theme, paint) => [
+  paint("Controls", theme.title),
   "",
   "Move:  arrows / hjkl",
   "Fill:  1-9",
@@ -410,18 +463,25 @@ const buildControlLines = () => [
   "Reset: r",
   "New:   n",
   "Diff:  d",
+  `Theme: m (${theme.name})`,
   "Quit:  q",
 ];
 
-const buildWinModalLines = () => [
-  color("╔══════════════════════════╗", "30;47"),
-  color("║                          ║", "30;47"),
-  color("║", "30;47") + color("         You Win          ", "1;30;47") + color("║", "30;47"),
-  color("║                          ║", "30;47"),
-  color("║", "30;47") + color("    Puzzle complete.      ", "30;47") + color("║", "30;47"),
-  color("║", "30;47") + color("   Press n for a new one  ", "30;47") + color("║", "30;47"),
-  color("║                          ║", "30;47"),
-  color("╚══════════════════════════╝", "30;47"),
+const buildWinModalLines = (theme, paint) => [
+  paint("╔══════════════════════════╗", theme.modalFrame),
+  paint("║                          ║", theme.modalFrame),
+  paint("║", theme.modalFrame) +
+    paint("         You Win          ", theme.modalTitle) +
+    paint("║", theme.modalFrame),
+  paint("║                          ║", theme.modalFrame),
+  paint("║", theme.modalFrame) +
+    paint("    Puzzle complete.      ", theme.modalFrame) +
+    paint("║", theme.modalFrame),
+  paint("║", theme.modalFrame) +
+    paint("   Press n for a new one  ", theme.modalFrame) +
+    paint("║", theme.modalFrame),
+  paint("║                          ║", theme.modalFrame),
+  paint("╚══════════════════════════╝", theme.modalFrame),
 ];
 
 const renderOverlay = ({
@@ -430,6 +490,7 @@ const renderOverlay = ({
   overlayLines,
   stream,
   termSize,
+  theme,
 }) => {
   const { cols, rows } = getTerminalSize(termSize);
   const layoutWidth = layoutLines.reduce(
@@ -453,7 +514,9 @@ const renderOverlay = ({
   const overlayRow = startRow + Math.max(0, Math.floor((boardHeight - overlayHeight) / 2));
 
   overlayLines.forEach((line, index) => {
-    stream.write(`\x1b[${overlayRow + index};${overlayCol}H${line}`);
+    stream.write(
+      `\x1b[${overlayRow + index};${overlayCol}H${ansiStyle(theme.baseStyle)}${line}`,
+    );
   });
 };
 
@@ -470,10 +533,19 @@ export const createGameSession = ({
   let cursor = 0;
   let showCandidates = false;
   let puzzleState = null;
+  let themeName = THEME_ORDER[0];
   let difficultyMenu = {
     active: true,
     message: "Choose a difficulty for your new puzzle.",
     selectedIndex: DIFFICULTIES.indexOf("medium"),
+  };
+
+  const getTheme = () => THEMES[themeName] ?? THEMES.light;
+
+  const toggleTheme = () => {
+    const currentIndex = THEME_ORDER.indexOf(themeName);
+    const nextIndex = (currentIndex + 1 + THEME_ORDER.length) % THEME_ORDER.length;
+    themeName = THEME_ORDER[nextIndex];
   };
 
   const resetPuzzle = (difficulty) => {
@@ -507,6 +579,12 @@ export const createGameSession = ({
   };
 
   const render = () => {
+    const theme = getTheme();
+    const paint = createPainter(theme);
+    const renderOptions = {
+      lineStyleCode: theme.baseStyle,
+      screenStyleCode: theme.baseStyle,
+    };
     const requiredCols = difficultyMenu.active ? MENU_MIN_COLS : GAME_MIN_COLS;
     const requiredRows = difficultyMenu.active ? MENU_MIN_ROWS : GAME_MIN_ROWS;
 
@@ -514,14 +592,20 @@ export const createGameSession = ({
       (termSize?.cols ?? 0) < requiredCols ||
       (termSize?.rows ?? 0) < requiredRows
     ) {
-      renderCentered(stream, termSize, [
-        color("Terminal too small", "1;31"),
-        "",
-        `Need at least ${requiredCols}x${requiredRows}`,
-        `Current size: ${termSize?.cols ?? 0}x${termSize?.rows ?? 0}`,
-        "",
-        "Resize the terminal to continue.",
-      ]);
+      renderCentered(
+        stream,
+        termSize,
+        [
+          paint("Terminal too small", theme.conflict),
+          "",
+          `Need at least ${requiredCols}x${requiredRows}`,
+          `Current size: ${termSize?.cols ?? 0}x${termSize?.rows ?? 0}`,
+          "",
+          "Resize the terminal to continue.",
+          "Press m to switch theme.",
+        ],
+        renderOptions,
+      );
       return;
     }
 
@@ -530,17 +614,23 @@ export const createGameSession = ({
         const selected = index === difficultyMenu.selectedIndex;
         const label = difficulty[0].toUpperCase() + difficulty.slice(1);
 
-        return selected ? color(`> ${label}`, "1;30;47") : `  ${label}`;
+        return selected ? paint(`> ${label}`, theme.menuSelected) : `  ${label}`;
       });
 
-      renderCentered(stream, termSize, [
-        ...MENU_TITLE,
-        color("Select Difficulty", "1;36"),
-        ...options,
-        "",
-        difficultyMenu.message,
-        "Use arrows or hjkl to choose. Press Enter to start.",
-      ]);
+      renderCentered(
+        stream,
+        termSize,
+        [
+          ...MENU_TITLE.map((line) => (line ? paint(line, theme.title) : line)),
+          paint("Select Difficulty", theme.sectionTitle),
+          ...options,
+          "",
+          difficultyMenu.message,
+          "Use arrows or hjkl to choose. Press Enter to start.",
+          `Press m to switch theme (${theme.name}).`,
+        ],
+        renderOptions,
+      );
       return;
     }
 
@@ -552,21 +642,24 @@ export const createGameSession = ({
       conflicts,
       cursor,
       lockedCells,
+      paint,
       showCandidates,
+      theme,
     });
-    const controlLines = buildControlLines();
+    const controlLines = buildControlLines(theme, paint);
 
     const lines = joinColumns(boardLines, controlLines);
 
-    renderCentered(stream, termSize, lines);
+    renderCentered(stream, termSize, lines, renderOptions);
 
     if (isSolved) {
       renderOverlay({
         boardLines,
         layoutLines: lines,
-        overlayLines: buildWinModalLines(),
+        overlayLines: buildWinModalLines(theme, paint),
         stream,
         termSize,
+        theme,
       });
     }
   };
@@ -603,6 +696,10 @@ export const createGameSession = ({
       case "q":
         closeConnection(0);
         return;
+      case "m":
+      case "M":
+        toggleTheme();
+        break;
       case "ESC[A":
       case "k":
         moveDifficultySelection(-1);
@@ -634,6 +731,10 @@ export const createGameSession = ({
       case "q":
         closeConnection(0);
         return;
+      case "m":
+      case "M":
+        toggleTheme();
+        break;
       case "ESC[A":
       case "k":
         cursor = moveSelection(cursor, -1, 0);
