@@ -12,8 +12,9 @@ const MENU_MIN_COLS = 60;
 const MENU_MIN_ROWS = 22;
 const CELL_WIDTH = 6;
 const BORDER_COLOR = "2;37";
-const CANDIDATE_COLOR = "37";
+const CANDIDATE_COLOR = "33";
 const DIGIT_COLOR = "30";
+const LOCKED_DIGIT_COLOR = "34";
 const FOCUSED_CELL_COLOR = "47";
 const SELECTED_DIGIT_COLOR = `${DIGIT_COLOR};${FOCUSED_CELL_COLOR}`;
 const SELECTED_CONFLICT_COLOR = `1;31;${FOCUSED_CELL_COLOR}`;
@@ -235,7 +236,13 @@ const buildHorizontalBorder = ({ left, minor, major, right, fill }) => {
   return line;
 };
 
-const getCellColorCode = ({ conflicts, cursor, index, value }) => {
+const getCellColorCode = ({
+  conflicts,
+  cursor,
+  index,
+  lockedCells,
+  value,
+}) => {
   if (index === cursor && conflicts.has(index)) {
     return SELECTED_CONFLICT_COLOR;
   }
@@ -250,6 +257,10 @@ const getCellColorCode = ({ conflicts, cursor, index, value }) => {
 
   if (conflicts.has(index)) {
     return CONFLICT_COLOR;
+  }
+
+  if (lockedCells[index]) {
+    return LOCKED_DIGIT_COLOR;
   }
 
   if (value) {
@@ -288,6 +299,7 @@ const getRenderedCellLines = ({
         conflicts,
         cursor,
         index,
+        lockedCells,
         value,
       });
 
