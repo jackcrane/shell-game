@@ -19,31 +19,33 @@ const MIN_COLS = 156;
 const MIN_ROWS = 50;
 const PANEL_GAP = "    ";
 const MAX_PANEL_WIDTH = 58;
-const GLYPH_WIDTH = 3;
 const CELL_WIDTH = 6;
 const CELL_HEIGHT = 3;
 const EMPTY_CELL_ART = ["      ", "  ..  ", "      "];
 const BLOCK_CELL_ART = ["      ", "      ", "      "];
+const GLYPH_LEFT_PADDING = " ";
 
-const centerGlyphLine = (line) => {
-  const trimmedLine = line.slice(0, GLYPH_WIDTH).trimEnd();
-  const leftPadding = Math.floor((CELL_WIDTH - trimmedLine.length) / 2);
-  const rightPadding = CELL_WIDTH - trimmedLine.length - leftPadding;
-  return `${" ".repeat(leftPadding)}${trimmedLine}${" ".repeat(rightPadding)}`;
-};
+const formatGlyphLine = (line) =>
+  `${GLYPH_LEFT_PADDING}${line}`.slice(0, CELL_WIDTH).padEnd(CELL_WIDTH, " ");
 
 const loadTypography = () => {
   const fallbackCharacters = new Map();
 
   for (const character of "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") {
-    fallbackCharacters.set(character, ["      ", `  ${character}   `, "      "]);
+    fallbackCharacters.set(character, [
+      formatGlyphLine(""),
+      formatGlyphLine(character),
+      formatGlyphLine(""),
+    ]);
   }
 
   if (!fs.existsSync(TYPOGRAPHY_PATH)) {
     return fallbackCharacters;
   }
 
-  const rawText = fs.readFileSync(TYPOGRAPHY_PATH, "utf8").replace(/\r\n/g, "\n");
+  const rawText = fs
+    .readFileSync(TYPOGRAPHY_PATH, "utf8")
+    .replace(/\r\n/g, "\n");
   const lines = rawText.split("\n");
   const characters = new Map(fallbackCharacters);
 
@@ -62,9 +64,13 @@ const loadTypography = () => {
 
     const art = [];
 
-    for (let lineIndex = 0; lineIndex < CELL_HEIGHT && index + 1 < lines.length; lineIndex += 1) {
+    for (
+      let lineIndex = 0;
+      lineIndex < CELL_HEIGHT && index + 1 < lines.length;
+      lineIndex += 1
+    ) {
       index += 1;
-      art.push(centerGlyphLine(lines[index]));
+      art.push(formatGlyphLine(lines[index]));
     }
 
     if (art.length === CELL_HEIGHT) {
@@ -201,7 +207,9 @@ const parseClueLine = (line) => {
   const [, cluePrefix, numberText, rest] = match;
   const answerSplitIndex = rest.lastIndexOf(" ~ ");
   const clueText =
-    answerSplitIndex === -1 ? rest.trim() : rest.slice(0, answerSplitIndex).trim();
+    answerSplitIndex === -1
+      ? rest.trim()
+      : rest.slice(0, answerSplitIndex).trim();
   const answer =
     answerSplitIndex === -1
       ? null
@@ -283,10 +291,7 @@ const parsePuzzleFile = (filePath) => {
       continue;
     }
 
-    clueTextMap.set(
-      `${parsedClue.direction}:${parsedClue.number}`,
-      parsedClue,
-    );
+    clueTextMap.set(`${parsedClue.direction}:${parsedClue.number}`, parsedClue);
   }
 
   const height = gridLines.length;
@@ -383,10 +388,8 @@ const parsePuzzleFile = (filePath) => {
         continue;
       }
 
-      const startsAcross =
-        col === 0 || cells[row * width + (col - 1)].isBlock;
-      const startsDown =
-        row === 0 || cells[(row - 1) * width + col].isBlock;
+      const startsAcross = col === 0 || cells[row * width + (col - 1)].isBlock;
+      const startsDown = row === 0 || cells[(row - 1) * width + col].isBlock;
 
       if (!startsAcross && !startsDown) {
         continue;
@@ -407,7 +410,9 @@ const parsePuzzleFile = (filePath) => {
   }
 
   if (firstOpenCell === null) {
-    throw new Error(`Puzzle file "${filePath}" does not contain playable cells.`);
+    throw new Error(
+      `Puzzle file "${filePath}" does not contain playable cells.`,
+    );
   }
 
   return {
@@ -445,7 +450,7 @@ const getCell = (puzzle, index) => puzzle.cells[index];
 const getClueForCell = (puzzle, index, direction) => {
   const cell = getCell(puzzle, index);
   const clueId = direction === "across" ? cell.acrossClueId : cell.downClueId;
-  return clueId ? puzzle.cluesById.get(clueId) ?? null : null;
+  return clueId ? (puzzle.cluesById.get(clueId) ?? null) : null;
 };
 
 const findSelectionForDirection = (puzzle, index, direction) => {
@@ -479,7 +484,8 @@ const createSessionState = (puzzle) => ({
   selection: puzzle.firstOpenCell,
   solved: false,
   startedAt: Date.now(),
-  status: "Type letters to fill the grid. Tab advances clues; space switches direction.",
+  status:
+    "Type letters to fill the grid. Tab advances clues; space switches direction.",
 });
 
 const hasEnoughRoom = (termSize) => {
@@ -526,9 +532,23 @@ const moveWithinClue = (state, step) => {
   return true;
 };
 
+const getPreferredClueSelection = (state, clue) => {
+  if (!clue || clue.cells.length === 0) {
+    return state.selection;
+  }
+
+  return (
+    clue.cells.find((cellIndex) => !state.entries[cellIndex]) ?? clue.cells[0]
+  );
+};
+
 const jumpToAdjacentClue = (state, delta) => {
   const clues = getCluesForDirection(state.puzzle, state.direction);
-  const activeClue = getClueForCell(state.puzzle, state.selection, state.direction);
+  const activeClue = getClueForCell(
+    state.puzzle,
+    state.selection,
+    state.direction,
+  );
 
   if (!activeClue) {
     return;
@@ -541,12 +561,16 @@ const jumpToAdjacentClue = (state, delta) => {
   }
 
   const nextIndex = (activeIndex + delta + clues.length) % clues.length;
-  state.selection = clues[nextIndex].cells[0];
+  state.selection = getPreferredClueSelection(state, clues[nextIndex]);
 };
 
 const moveToAdjacentClueEdge = (state, delta) => {
   const clues = getCluesForDirection(state.puzzle, state.direction);
-  const activeClue = getClueForCell(state.puzzle, state.selection, state.direction);
+  const activeClue = getClueForCell(
+    state.puzzle,
+    state.selection,
+    state.direction,
+  );
 
   if (!activeClue) {
     return false;
@@ -567,9 +591,7 @@ const moveToAdjacentClueEdge = (state, delta) => {
 
   state.selection =
     delta < 0
-      ? state.entries[targetClue.cells[targetClue.cells.length - 1]]
-        ? targetClue.cells[targetClue.cells.length - 1]
-        : targetClue.cells[0]
+      ? targetClue.cells[targetClue.cells.length - 1]
       : targetClue.cells[0];
 
   return true;
@@ -654,15 +676,16 @@ const fillLetter = (state, letter) => {
     jumpToAdjacentClue(state, 1);
   }
 
-  state.status = "Keep going. Tab advances clues, and space switches direction.";
+  state.status =
+    "Keep going. Tab advances clues, and space switches direction.";
 };
 
 const isCellIncorrect = (state, cell) =>
   Boolean(
     state.checkMode &&
-      !cell.isBlock &&
-      state.entries[cell.index] &&
-      state.entries[cell.index] !== cell.solution,
+    !cell.isBlock &&
+    state.entries[cell.index] &&
+    state.entries[cell.index] !== cell.solution,
   );
 
 const getArtForEntry = (entry) => {
@@ -719,7 +742,11 @@ const getCellDisplay = (state, cell, activeClue) => {
 
 const buildBoardLines = (state) => {
   const lines = [];
-  const activeClue = getClueForCell(state.puzzle, state.selection, state.direction);
+  const activeClue = getClueForCell(
+    state.puzzle,
+    state.selection,
+    state.direction,
+  );
   const innerWidth = state.puzzle.width * CELL_WIDTH;
 
   lines.push(color(`┌${"─".repeat(innerWidth)}┐`, "38;5;245"));
@@ -750,7 +777,11 @@ const buildBoardLines = (state) => {
 };
 
 const buildSelectedClueLines = (state) => {
-  const activeClue = getClueForCell(state.puzzle, state.selection, state.direction);
+  const activeClue = getClueForCell(
+    state.puzzle,
+    state.selection,
+    state.direction,
+  );
   const totalWidth = state.puzzle.width * CELL_WIDTH + 2;
   const clueLabel = activeClue
     ? `${activeClue.id}. ${activeClue.text}`
@@ -789,7 +820,9 @@ const buildClueWindow = (
   return clues.slice(start, end).map((clue) => {
     const label = `${clue.id} ${clue.text} [${clue.length}]`;
     const line = truncateText(label, width);
-    return clue.id === activeClue?.id ? color(`> ${line}`, activeStyleCode) : `  ${line}`;
+    return clue.id === activeClue?.id
+      ? color(`> ${line}`, activeStyleCode)
+      : `  ${line}`;
   });
 };
 
@@ -814,10 +847,7 @@ const buildPanelLines = (state, panelWidth, termRows) => {
       ? `Check:    / ${color("(on)", "38;5;240")}`
       : "Check:    /",
   ];
-  const clueSectionTitles = [
-    color("Across", "1;33"),
-    color("Down", "1;33"),
-  ];
+  const clueSectionTitles = [color("Across", "1;33"), color("Down", "1;33")];
   const availableClueRows = Math.max(
     6,
     termRows - headerLines.length - controls.length - clueSectionTitles.length,
