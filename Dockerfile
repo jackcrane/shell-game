@@ -2,6 +2,8 @@ FROM node:20-bookworm-slim
 
 WORKDIR /app
 
+ARG GIT_COMMIT_SHORT=dev
+
 RUN apt-get update \
   && apt-get install -y --no-install-recommends openssh-client \
   && rm -rf /var/lib/apt/lists/*
@@ -17,6 +19,7 @@ RUN mkdir -p /app/data \
 
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
+ENV APP_BUILD_COMMIT=$GIT_COMMIT_SHORT
 
 VOLUME ["/app/data"]
 

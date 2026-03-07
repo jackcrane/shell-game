@@ -3,6 +3,7 @@ import {
   color,
   getTerminalSize,
   getVisibleWidth,
+  parseInputTokens,
   renderCentered,
 } from "../../lib/session-ui.js";
 
@@ -151,39 +152,6 @@ const moveSelection = (index, rowDelta, colDelta) => {
   const nextRow = (row + rowDelta + 9) % 9;
   const nextCol = (col + colDelta + 9) % 9;
   return nextRow * 9 + nextCol;
-};
-
-const parseTokens = (chunk) => {
-  const tokens = [];
-
-  for (let index = 0; index < chunk.length; index += 1) {
-    const character = chunk[index];
-
-    if (character !== "\u001b") {
-      tokens.push(character);
-      continue;
-    }
-
-    if (chunk[index + 1] === "[") {
-      const third = chunk[index + 2];
-
-      if (["A", "B", "C", "D", "H", "F"].includes(third)) {
-        tokens.push(`ESC[${third}`);
-        index += 2;
-        continue;
-      }
-
-      if (third === "3" && chunk[index + 3] === "~") {
-        tokens.push("ESC[3~");
-        index += 3;
-        continue;
-      }
-    }
-
-    tokens.push(character);
-  }
-
-  return tokens;
 };
 
 const createPuzzleState = (difficulty) => {
@@ -730,7 +698,7 @@ export const createGameSession = ({
     onData(data) {
       const input = data.toString("utf8");
 
-      for (const token of parseTokens(input)) {
+      for (const token of parseInputTokens(input)) {
         handleToken(token);
       }
     },
