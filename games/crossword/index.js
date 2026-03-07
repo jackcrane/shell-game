@@ -767,31 +767,11 @@ const buildClueWindow = (clues, activeClue, width, height) => {
 
 const buildPanelLines = (state, panelWidth, termRows) => {
   const activeClue = getClueForCell(state.puzzle, state.selection, state.direction);
-  const otherDirection = state.direction === "across" ? "down" : "across";
-  const crossingClue = getClueForCell(state.puzzle, state.selection, otherDirection);
-  const pattern = activeClue
-    ? activeClue.cells.map((index) => state.entries[index] || "_").join("")
-    : "";
   const headerLines = [
     color(truncateText(state.puzzle.title, panelWidth), "1;36"),
     truncateText(`${state.puzzle.author} | ${state.puzzle.date}`, panelWidth),
     truncateText(`Source: ${state.puzzle.source}`, panelWidth),
     truncateText(state.puzzle.relativePath, panelWidth),
-    "",
-    truncateText(state.status, panelWidth),
-    `Time: ${formatElapsed(Date.now() - state.startedAt)}`,
-    `Cell: r${getCell(state.puzzle, state.selection).row + 1} c${getCell(state.puzzle, state.selection).col + 1}`,
-    `Direction: ${state.direction}`,
-    activeClue ? `${activeClue.id} [${activeClue.length}]` : "No active clue",
-    ...wrapText(activeClue?.text ?? "", panelWidth),
-    activeClue ? truncateText(`Pattern: ${pattern}`, panelWidth) : "",
-    "",
-    crossingClue
-      ? truncateText(
-          `Crossing ${crossingClue.id}: ${crossingClue.text} [${crossingClue.length}]`,
-          panelWidth,
-        )
-      : `Crossing: none`,
     "",
     color(
       `Clues (${state.direction === "across" ? "across" : "down"})`,
@@ -802,13 +782,11 @@ const buildPanelLines = (state, panelWidth, termRows) => {
   const controls = [
     "",
     color("Controls", "1;33"),
-    "Arrows move",
-    "Type A-Z to fill",
-    "Backspace clears",
-    "Tab next clue",
-    "Shift+Tab previous clue",
-    "Space switch direction",
-    "Ctrl+C quit",
+    "Move:     Arrows",
+    "Clear:    Backspace",
+    "Next:     Tab",
+    "Previous: Shift+Tab",
+    "Switch:   Space",
   ];
   const clueWindowHeight = Math.max(
     3,
