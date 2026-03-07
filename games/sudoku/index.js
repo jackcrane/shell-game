@@ -1,6 +1,7 @@
 import { getSudoku } from "sudoku-gen";
 import {
   color,
+  getTerminalSize,
   getVisibleWidth,
   renderCentered,
 } from "../../lib/session-ui.js";
@@ -431,11 +432,8 @@ const buildBoardLines = ({
   return lines;
 };
 
-const buildControlLines = ({ isSolved }) => [
-  color(isSolved ? "You Win" : "Controls", isSolved ? "1;32" : "1;36"),
-  ...(isSolved
-    ? ["", color("Puzzle solved.", "1;32"), "Press n for a new board."]
-    : []),
+const buildControlLines = () => [
+  color("Controls", "1;36"),
   "",
   "Move:  arrows / hjkl",
   "Fill:  1-9",
@@ -446,6 +444,47 @@ const buildControlLines = ({ isSolved }) => [
   "Diff:  d",
   "Quit:  q",
 ];
+
+const buildWinModalLines = () => [
+  color("╔══════════════════════╗", "30;47"),
+  color("║", "30;47") + color("       You Win        ", "1;30;47") + color("║", "30;47"),
+  color("║", "30;47") + color("   Puzzle complete.   ", "30;47") + color("║", "30;47"),
+  color("║", "30;47") + color(" Press n for a new one", "30;47") + color("║", "30;47"),
+  color("╚══════════════════════╝", "30;47"),
+];
+
+const renderOverlay = ({
+  boardLines,
+  layoutLines,
+  overlayLines,
+  stream,
+  termSize,
+}) => {
+  const { cols, rows } = getTerminalSize(termSize);
+  const layoutWidth = layoutLines.reduce(
+    (max, line) => Math.max(max, getVisibleWidth(line)),
+    0,
+  );
+  const layoutHeight = layoutLines.length;
+  const boardWidth = boardLines.reduce(
+    (max, line) => Math.max(max, getVisibleWidth(line)),
+    0,
+  );
+  const boardHeight = boardLines.length;
+  const overlayWidth = overlayLines.reduce(
+    (max, line) => Math.max(max, getVisibleWidth(line)),
+    0,
+  );
+  const overlayHeight = overlayLines.length;
+  const startCol = Math.max(1, Math.floor((cols - layoutWidth) / 2) + 1);
+  const startRow = Math.max(1, Math.floor((rows - layoutHeight) / 2) + 1);
+  const overlayCol = startCol + Math.max(0, Math.floor((boardWidth - overlayWidth) / 2));
+  const overlayRow = startRow + Math.max(0, Math.floor((boardHeight - overlayHeight) / 2));
+
+  overlayLines.forEach((line, index) => {
+    stream.write(`\x1b[${overlayRow + index};${overlayCol}H${line}`);
+  });
+};
 
 export const metadata = {
   description: "Interactive Sudoku served over SSH.",
@@ -544,11 +583,21 @@ export const createGameSession = ({
       lockedCells,
       showCandidates,
     });
-    const controlLines = buildControlLines({ isSolved });
+    const controlLines = buildControlLines();
 
     const lines = joinColumns(boardLines, controlLines);
 
     renderCentered(stream, termSize, lines);
+
+    if (isSolved) {
+      renderOverlay({
+        boardLines,
+        layoutLines: lines,
+        overlayLines: buildWinModalLines(),
+        stream,
+        termSize,
+      });
+    }
   };
 
   const writeDigit = (digit) => {

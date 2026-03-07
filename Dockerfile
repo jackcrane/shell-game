@@ -17,11 +17,10 @@ RUN mkdir -p /app/data \
 
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
-ENV PORT=2222
 
 VOLUME ["/app/data"]
 
-EXPOSE 2222
+EXPOSE 22
 
 USER node
 
