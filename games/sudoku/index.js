@@ -11,7 +11,8 @@ const GAME_MIN_ROWS = 37;
 const MENU_MIN_COLS = 60;
 const MENU_MIN_ROWS = 22;
 const CELL_WIDTH = 6;
-const BORDER_COLOR = "2;37";
+const MINOR_BORDER_COLOR = "2;37";
+const MAJOR_BORDER_COLOR = "30";
 const CANDIDATE_COLOR = "33";
 const DIGIT_COLOR = "30";
 const LOCKED_DIGIT_COLOR = "34";
@@ -43,7 +44,8 @@ const DIGIT_ART = {
   8: ["┏━┓", "┣━┫", "┗━┛"],
   9: ["┏━┓", "┗━┫", "┗━┛"],
 };
-const colorBorder = (text) => color(text, BORDER_COLOR);
+const colorBorder = (text, weight = "minor") =>
+  color(text, weight === "major" ? MAJOR_BORDER_COLOR : MINOR_BORDER_COLOR);
 const centerArtLine = (line) => ` ${line}  `;
 
 const CENTERED_DIGIT_ART = Object.fromEntries(
@@ -218,23 +220,37 @@ const joinColumns = (leftLines, rightLines, gap = "    ") => {
   return lines;
 };
 
-const buildHorizontalBorder = ({ left, minor, major, right, fill }) => {
-  let line = colorBorder(left);
+const buildHorizontalBorder = ({
+  left,
+  minor,
+  major,
+  right,
+  fill,
+  leftWeight = "major",
+  minorWeight = "minor",
+  majorWeight = "major",
+  rightWeight = "major",
+  fillWeight = "minor",
+}) => {
+  let line = colorBorder(left, leftWeight);
 
   for (let col = 0; col < 9; col += 1) {
-    line += colorBorder(fill.repeat(CELL_WIDTH));
+    line += colorBorder(fill.repeat(CELL_WIDTH), fillWeight);
 
     if (col === 8) {
-      line += colorBorder(right);
+      line += colorBorder(right, rightWeight);
     } else if ((col + 1) % 3 === 0) {
-      line += colorBorder(major);
+      line += colorBorder(major, majorWeight);
     } else {
-      line += colorBorder(minor);
+      line += colorBorder(minor, minorWeight);
     }
   }
 
   return line;
 };
+
+const isSolvedBoard = (board, solution) =>
+  board.every((value, index) => value === solution[index]);
 
 const getCellColorCode = ({
   conflicts,
@@ -333,6 +349,8 @@ const buildBoardLines = ({
       major: "┳",
       right: "┓",
       fill: "━",
+      minorWeight: "major",
+      fillWeight: "major",
     }),
   ];
 
@@ -356,15 +374,15 @@ const buildBoardLines = ({
     }
 
     for (let lineIndex = 0; lineIndex < 3; lineIndex += 1) {
-      let line = colorBorder("┃");
+      let line = colorBorder("┃", "major");
 
       for (let col = 0; col < 9; col += 1) {
         line += renderedRow[lineIndex][col];
 
         if (col === 8) {
-          line += colorBorder("┃");
+          line += colorBorder("┃", "major");
         } else if ((col + 1) % 3 === 0) {
-          line += colorBorder("┃");
+          line += colorBorder("┃", "major");
         } else {
           line += colorBorder("│");
         }
@@ -381,6 +399,8 @@ const buildBoardLines = ({
           major: "┻",
           right: "┛",
           fill: "━",
+          minorWeight: "major",
+          fillWeight: "major",
         }),
       );
     } else if ((row + 1) % 3 === 0) {
@@ -391,6 +411,8 @@ const buildBoardLines = ({
           major: "╋",
           right: "┫",
           fill: "━",
+          minorWeight: "major",
+          fillWeight: "major",
         }),
       );
     } else {
@@ -409,8 +431,11 @@ const buildBoardLines = ({
   return lines;
 };
 
-const buildControlLines = () => [
-  color("Controls", "1;36"),
+const buildControlLines = ({ isSolved }) => [
+  color(isSolved ? "You Win" : "Controls", isSolved ? "1;32" : "1;36"),
+  ...(isSolved
+    ? ["", color("Puzzle solved.", "1;32"), "Press n for a new board."]
+    : []),
   "",
   "Move:  arrows / hjkl",
   "Fill:  1-9",
@@ -509,8 +534,9 @@ export const createGameSession = ({
       return;
     }
 
-    const { board, lockedCells } = puzzleState;
+    const { board, lockedCells, solution } = puzzleState;
     const conflicts = buildConflicts(board, lockedCells);
+    const isSolved = conflicts.size === 0 && isSolvedBoard(board, solution);
     const boardLines = buildBoardLines({
       board,
       conflicts,
@@ -518,7 +544,7 @@ export const createGameSession = ({
       lockedCells,
       showCandidates,
     });
-    const controlLines = buildControlLines();
+    const controlLines = buildControlLines({ isSolved });
 
     const lines = joinColumns(boardLines, controlLines);
 
