@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import {
+  ansiStyle,
   color,
   getTerminalSize,
   getVisibleWidth,
@@ -644,7 +645,7 @@ const fillLetter = (state, letter) => {
 
   if (checkSolved(state)) {
     state.solved = true;
-    state.status = `Puzzle solved in ${formatElapsed(Date.now() - state.startedAt)}. Press r for another puzzle.`;
+    state.status = `Puzzle solved in ${formatElapsed(Date.now() - state.startedAt)}.`;
     return;
   }
 
@@ -663,31 +664,48 @@ const getArtForEntry = (entry) => {
   return LARGE_GLYPHS.get(entry) ?? ["      ", `  ${entry}   `, "      "];
 };
 
-const colorArt = (art, code) => art.map((line) => color(line, code));
+const shiftArtRight = (art) =>
+  art.map((line) => ` ${line.slice(0, CELL_WIDTH - 1)}`);
+
+const paintCellArt = (art, baseCode, number = null) => {
+  const shiftedArt = number ? shiftArtRight(art) : art;
+
+  if (!number) {
+    return shiftedArt.map((line) => color(line, baseCode));
+  }
+
+  const digits = String(number).slice(0, 2);
+  const numberCode = `${baseCode};1;33`;
+  const baseReset = ansiStyle(baseCode);
+
+  return shiftedArt.map((line, index) => {
+    if (index !== 0) {
+      return color(line, baseCode);
+    }
+
+    const suffix = line.slice(digits.length);
+    return `${color(digits, numberCode, baseReset)}${color(suffix, baseCode)}`;
+  });
+};
 
 const getCellDisplay = (state, cell, activeClue) => {
   if (cell.isBlock) {
-    return colorArt(BLOCK_CELL_ART, "48;5;238");
+    return paintCellArt(BLOCK_CELL_ART, "48;5;238");
   }
 
   const isInActiveClue = activeClue?.cells.includes(cell.index) ?? false;
   const isSelected = cell.index === state.selection;
   const entry = state.entries[cell.index];
   const art = getArtForEntry(entry);
+  const baseCode = isSelected
+    ? "1;30;48;5;226"
+    : isInActiveClue
+      ? "30;48;5;153"
+      : entry
+        ? "1;37"
+        : "2;37";
 
-  if (isSelected) {
-    return colorArt(art, "1;30;48;5;226");
-  }
-
-  if (isInActiveClue) {
-    return colorArt(art, "30;48;5;153");
-  }
-
-  if (entry) {
-    return colorArt(art, "1;37");
-  }
-
-  return colorArt(art, "2;37");
+  return paintCellArt(art, baseCode, cell.number);
 };
 
 const buildBoardLines = (state) => {
@@ -790,9 +808,7 @@ const buildPanelLines = (state, panelWidth, termRows) => {
     "Tab next clue",
     "Shift+Tab previous clue",
     "Space switch direction",
-    "n/p next or prev clue",
-    "r new puzzle",
-    "q quit",
+    "Ctrl+C quit",
   ];
   const clueWindowHeight = Math.max(
     3,
@@ -815,11 +831,6 @@ export const createGameSession = ({
 }) => {
   let termSize = initialTermSize;
   let state = createSessionState(loadRandomPuzzle());
-
-  const reloadPuzzle = () => {
-    state = createSessionState(loadRandomPuzzle());
-    state.status = "Loaded a new puzzle.";
-  };
 
   const render = () => {
     const { cols, rows } = getTerminalSize(termSize);
@@ -861,7 +872,7 @@ export const createGameSession = ({
       const input = data.toString("utf8");
 
       for (const token of parseInputTokens(input)) {
-        if (token === "\u0003" || token.toLowerCase() === "q") {
+        if (token === "\u0003") {
           closeConnection(0);
           return;
         }
@@ -917,29 +928,6 @@ export const createGameSession = ({
 
           if (clearResult === "cleared") {
             state.status = "Entry cleared.";
-          }
-
-          render();
-          continue;
-        }
-
-        if (token.toLowerCase() === "n") {
-          jumpToAdjacentClue(state, 1);
-          render();
-          continue;
-        }
-
-        if (token.toLowerCase() === "p") {
-          jumpToAdjacentClue(state, -1);
-          render();
-          continue;
-        }
-
-        if (token.toLowerCase() === "r") {
-          try {
-            reloadPuzzle();
-          } catch (error) {
-            state.status = String(error.message || error);
           }
 
           render();
