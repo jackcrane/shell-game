@@ -26,7 +26,7 @@ const EMPTY_CELL_ART = ["      ", "  ..  ", "      "];
 const BLOCK_CELL_ART = ["      ", "      ", "      "];
 
 const centerGlyphLine = (line) => {
-  const trimmedLine = line.slice(0, GLYPH_WIDTH);
+  const trimmedLine = line.slice(0, GLYPH_WIDTH).trimEnd();
   const leftPadding = Math.floor((CELL_WIDTH - trimmedLine.length) / 2);
   const rightPadding = CELL_WIDTH - trimmedLine.length - leftPadding;
   return `${" ".repeat(leftPadding)}${trimmedLine}${" ".repeat(rightPadding)}`;
@@ -64,7 +64,7 @@ const loadTypography = () => {
 
     for (let lineIndex = 0; lineIndex < CELL_HEIGHT && index + 1 < lines.length; lineIndex += 1) {
       index += 1;
-      art.push(centerGlyphLine(lines[index].padEnd(GLYPH_WIDTH, " ").slice(0, GLYPH_WIDTH)));
+      art.push(centerGlyphLine(lines[index]));
     }
 
     if (art.length === CELL_HEIGHT) {
