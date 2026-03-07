@@ -4,6 +4,18 @@ import { color, renderCentered } from "../../lib/session-ui.js";
 const DIFFICULTIES = ["easy", "medium", "hard", "expert"];
 const MIN_COLS = 58;
 const MIN_ROWS = 22;
+const MENU_MIN_COLS = 60;
+const MENU_TITLE = [
+  "███████╗██╗   ██╗██████╗  ██████╗ ██╗  ██╗██╗   ██╗",
+  "██╔════╝██║   ██║██╔══██╗██╔═══██╗██║ ██╔╝██║   ██║",
+  "███████╗██║   ██║██║  ██║██║   ██║█████╔╝ ██║   ██║",
+  "╚════██║██║   ██║██║  ██║██║   ██║██╔═██╗ ██║   ██║",
+  "███████║╚██████╔╝██████╔╝╚██████╔╝██║  ██╗╚██████╔╝",
+  "╚══════╝ ╚═════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ",
+  "",
+  "",
+  "",
+];
 
 const createCell = (value) => (value === "-" ? "" : value);
 
@@ -141,11 +153,6 @@ const parseTokens = (chunk) => {
   return tokens;
 };
 
-const cycleDifficulty = (difficulty) => {
-  const currentIndex = DIFFICULTIES.indexOf(difficulty);
-  return DIFFICULTIES[(currentIndex + 1) % DIFFICULTIES.length];
-};
-
 const createPuzzleState = (difficulty) => {
   const puzzle = getSudoku(difficulty);
   const initialBoard = toBoard(puzzle.puzzle);
@@ -219,22 +226,77 @@ export const createGameSession = ({
   let termSize = initialTermSize;
   let cursor = 0;
   let lastMessage = "Use arrows or hjkl to move. Type 1-9 to fill a square.";
-  let puzzleState = createPuzzleState("medium");
+  let puzzleState = null;
+  let difficultyMenu = {
+    active: true,
+    message: "Choose a difficulty for your new puzzle.",
+    selectedIndex: DIFFICULTIES.indexOf("medium"),
+  };
 
-  const resetPuzzle = (difficulty = puzzleState.difficulty) => {
+  const resetPuzzle = (difficulty) => {
     puzzleState = createPuzzleState(difficulty);
     cursor = 0;
   };
 
+  const openDifficultyMenu = ({
+    defaultDifficulty = puzzleState?.difficulty ?? "medium",
+    message = "Choose a difficulty for your new puzzle.",
+  } = {}) => {
+    difficultyMenu = {
+      active: true,
+      message,
+      selectedIndex: Math.max(0, DIFFICULTIES.indexOf(defaultDifficulty)),
+    };
+  };
+
+  const closeDifficultyMenu = () => {
+    difficultyMenu = {
+      ...difficultyMenu,
+      active: false,
+    };
+  };
+
+  const confirmDifficultySelection = () => {
+    const difficulty = DIFFICULTIES[difficultyMenu.selectedIndex] ?? "medium";
+    resetPuzzle(difficulty);
+    closeDifficultyMenu();
+    updateMessage(`New ${puzzleState.difficulty} puzzle ready.`);
+  };
+
   const render = () => {
-    if ((termSize?.cols ?? 0) < MIN_COLS || (termSize?.rows ?? 0) < MIN_ROWS) {
+    const requiredCols = difficultyMenu.active
+      ? Math.max(MIN_COLS, MENU_MIN_COLS)
+      : MIN_COLS;
+
+    if ((termSize?.cols ?? 0) < requiredCols || (termSize?.rows ?? 0) < MIN_ROWS) {
       renderCentered(stream, termSize, [
         color("Terminal too small", "1;31"),
         "",
-        `Need at least ${MIN_COLS}x${MIN_ROWS}`,
+        `Need at least ${requiredCols}x${MIN_ROWS}`,
         `Current size: ${termSize?.cols ?? 0}x${termSize?.rows ?? 0}`,
         "",
         "Resize the terminal to continue.",
+      ]);
+      return;
+    }
+
+    if (difficultyMenu.active) {
+      const options = DIFFICULTIES.map((difficulty, index) => {
+        const selected = index === difficultyMenu.selectedIndex;
+        const label = difficulty[0].toUpperCase() + difficulty.slice(1);
+
+        return selected
+          ? color(`> ${label}`, "1;30;47")
+          : `  ${label}`;
+      });
+
+      renderCentered(stream, termSize, [
+        ...MENU_TITLE,
+        color("Select Difficulty", "1;36"),
+        ...options,
+        "",
+        difficultyMenu.message,
+        "Use arrows or hjkl to choose. Press Enter to start.",
       ]);
       return;
     }
@@ -256,7 +318,7 @@ export const createGameSession = ({
       isSolved
         ? color("Solved. Press n for a new puzzle, d to change difficulty, or q to quit.", "1;32")
         : lastMessage,
-      "Controls: arrows/hjkl move, 1-9 fill, 0/. or Backspace clear, r reset, n new, d difficulty, q quit",
+      "Controls: arrows/hjkl move, 1-9 fill, 0/. or Backspace clear, r reset, n new, d difficulty menu, q quit",
     ];
 
     renderCentered(stream, termSize, lines);
@@ -296,7 +358,44 @@ export const createGameSession = ({
     updateMessage(`Cleared ${formatPosition(cursor)}.`);
   };
 
+  const moveDifficultySelection = (delta) => {
+    difficultyMenu.selectedIndex =
+      (difficultyMenu.selectedIndex + delta + DIFFICULTIES.length) %
+      DIFFICULTIES.length;
+  };
+
+  const handleDifficultyToken = (token) => {
+    switch (token) {
+      case "\u0003":
+      case "q":
+        closeConnection(0);
+        return;
+      case "ESC[A":
+      case "k":
+        moveDifficultySelection(-1);
+        break;
+      case "ESC[B":
+      case "j":
+        moveDifficultySelection(1);
+        break;
+      case "\r":
+      case "\n":
+      case " ":
+        confirmDifficultySelection();
+        break;
+      default:
+        break;
+    }
+
+    render();
+  };
+
   const handleToken = (token) => {
+    if (difficultyMenu.active) {
+      handleDifficultyToken(token);
+      return;
+    }
+
     switch (token) {
       case "\u0003":
       case "q":
@@ -327,12 +426,17 @@ export const createGameSession = ({
         updateMessage("Puzzle reset.");
         break;
       case "n":
-        resetPuzzle(puzzleState.difficulty);
-        updateMessage(`New ${puzzleState.difficulty} puzzle ready.`);
+        openDifficultyMenu({
+          defaultDifficulty: puzzleState.difficulty,
+          message: "Choose a difficulty for the next puzzle.",
+        });
         break;
+      case "d":
       case "D":
-        resetPuzzle(cycleDifficulty(puzzleState.difficulty));
-        updateMessage(`Difficulty changed to ${puzzleState.difficulty}.`);
+        openDifficultyMenu({
+          defaultDifficulty: puzzleState.difficulty,
+          message: "Choose a difficulty and press Enter to start a new puzzle.",
+        });
         break;
       case ".":
       case "0":
@@ -353,7 +457,10 @@ export const createGameSession = ({
 
   return {
     start() {
-      updateMessage("Use arrows or hjkl to move. Press d to cycle difficulty.");
+      openDifficultyMenu({
+        defaultDifficulty: "medium",
+        message: "Choose a difficulty for your new puzzle.",
+      });
       render();
     },
     onData(data) {
