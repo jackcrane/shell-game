@@ -1,0 +1,13 @@
+{
+  "name": "shell-game",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ssh2": "^1.16.0",
+    "sudoku-gen": "^1.0.2"
+  }
+}

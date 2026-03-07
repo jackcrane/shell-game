@@ -18,7 +18,6 @@ RUN mkdir -p /app/data \
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 ENV PORT=2222
-ENV HOST_KEY_PATH=/app/data/host.key
 
 VOLUME ["/app/data"]
 
