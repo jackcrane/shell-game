@@ -542,6 +542,37 @@ const jumpToAdjacentClue = (state, delta) => {
   state.selection = clues[nextIndex].cells[0];
 };
 
+const moveToAdjacentClueEdge = (state, delta) => {
+  const clues = getCluesForDirection(state.puzzle, state.direction);
+  const activeClue = getClueForCell(state.puzzle, state.selection, state.direction);
+
+  if (!activeClue) {
+    return false;
+  }
+
+  const activeIndex = clues.findIndex((clue) => clue.id === activeClue.id);
+
+  if (activeIndex === -1) {
+    return false;
+  }
+
+  const nextIndex = (activeIndex + delta + clues.length) % clues.length;
+  const targetClue = clues[nextIndex];
+
+  if (!targetClue) {
+    return false;
+  }
+
+  state.selection =
+    delta < 0
+      ? state.entries[targetClue.cells[targetClue.cells.length - 1]]
+        ? targetClue.cells[targetClue.cells.length - 1]
+        : targetClue.cells[0]
+      : targetClue.cells[0];
+
+  return true;
+};
+
 const toggleDirection = (state) => {
   const nextDirection = state.direction === "across" ? "down" : "across";
   state.selection = findSelectionForDirection(
@@ -556,21 +587,41 @@ const toggleDirection = (state) => {
 
 const clearCurrentEntry = (state) => {
   const cell = getCell(state.puzzle, state.selection);
+  const clue = getClueForCell(state.puzzle, state.selection, state.direction);
 
   if (cell.isBlock) {
     return;
   }
 
+  const atClueStart = clue?.cells[0] === cell.index;
+
+  if (atClueStart) {
+    if (state.entries[cell.index]) {
+      state.entries[cell.index] = "";
+      state.solved = false;
+    }
+
+    if (moveToAdjacentClueEdge(state, -1)) {
+      state.status = "Moved to previous clue.";
+      return "moved";
+    }
+
+    return "cleared";
+  }
+
   if (state.entries[cell.index]) {
     state.entries[cell.index] = "";
     state.solved = false;
-    return;
+    return "cleared";
   }
 
   if (moveWithinClue(state, -1)) {
     state.entries[state.selection] = "";
     state.solved = false;
+    return "cleared";
   }
+
+  return "none";
 };
 
 const checkSolved = (state) =>
@@ -597,7 +648,10 @@ const fillLetter = (state, letter) => {
     return;
   }
 
-  moveWithinClue(state, 1);
+  if (!moveWithinClue(state, 1)) {
+    jumpToAdjacentClue(state, 1);
+  }
+
   state.status = "Keep going. Tab advances clues, and space switches direction.";
 };
 
@@ -734,6 +788,7 @@ const buildPanelLines = (state, panelWidth, termRows) => {
     "Type A-Z to fill",
     "Backspace clears",
     "Tab next clue",
+    "Shift+Tab previous clue",
     "Space switch direction",
     "n/p next or prev clue",
     "r new puzzle",
@@ -817,6 +872,12 @@ export const createGameSession = ({
           continue;
         }
 
+        if (token === "ESC[Z") {
+          jumpToAdjacentClue(state, -1);
+          render();
+          continue;
+        }
+
         if (token === " ") {
           toggleDirection(state);
           render();
@@ -852,8 +913,12 @@ export const createGameSession = ({
         }
 
         if (token === "\u007f" || token === "\b" || token === "ESC[3~") {
-          clearCurrentEntry(state);
-          state.status = "Entry cleared.";
+          const clearResult = clearCurrentEntry(state);
+
+          if (clearResult === "cleared") {
+            state.status = "Entry cleared.";
+          }
+
           render();
           continue;
         }
