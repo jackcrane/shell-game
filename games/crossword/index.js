@@ -468,6 +468,7 @@ const findSelectionForDirection = (puzzle, index, direction) => {
 };
 
 const createSessionState = (puzzle) => ({
+  checkMode: false,
   direction: getClueForCell(puzzle, puzzle.firstOpenCell, "across")
     ? "across"
     : "down",
@@ -656,6 +657,14 @@ const fillLetter = (state, letter) => {
   state.status = "Keep going. Tab advances clues, and space switches direction.";
 };
 
+const isCellIncorrect = (state, cell) =>
+  Boolean(
+    state.checkMode &&
+      !cell.isBlock &&
+      state.entries[cell.index] &&
+      state.entries[cell.index] !== cell.solution,
+  );
+
 const getArtForEntry = (entry) => {
   if (!entry) {
     return EMPTY_CELL_ART;
@@ -697,13 +706,13 @@ const getCellDisplay = (state, cell, activeClue) => {
   const isSelected = cell.index === state.selection;
   const entry = state.entries[cell.index];
   const art = getArtForEntry(entry);
+  const isIncorrect = isCellIncorrect(state, cell);
+  const foregroundCode = isIncorrect ? "1;38;5;160" : entry ? "1;30" : "2;37";
   const baseCode = isSelected
-    ? "1;30;48;5;226"
+    ? `${foregroundCode};48;5;226`
     : isInActiveClue
-      ? "30;48;5;153"
-      : entry
-        ? "1;37"
-        : "2;37";
+      ? `${foregroundCode};48;5;153`
+      : foregroundCode;
 
   return paintCellArt(art, baseCode, cell.number);
 };
@@ -740,7 +749,26 @@ const buildBoardLines = (state) => {
   return lines;
 };
 
-const buildClueWindow = (clues, activeClue, width, height) => {
+const buildSelectedClueLines = (state) => {
+  const activeClue = getClueForCell(state.puzzle, state.selection, state.direction);
+  const totalWidth = state.puzzle.width * CELL_WIDTH + 2;
+  const clueLabel = activeClue
+    ? `${activeClue.id}. ${activeClue.text}`
+    : "No clue selected.";
+  const wrappedLines = wrapText(clueLabel, Math.max(1, totalWidth - 2));
+
+  return wrappedLines.map((line) =>
+    color(` ${padVisibleEnd(line, totalWidth - 2)} `, "30;48;5;153"),
+  );
+};
+
+const buildClueWindow = (
+  clues,
+  activeClue,
+  width,
+  height,
+  activeStyleCode = "1;30;47",
+) => {
   if (height <= 0 || clues.length === 0) {
     return [];
   }
@@ -761,22 +789,17 @@ const buildClueWindow = (clues, activeClue, width, height) => {
   return clues.slice(start, end).map((clue) => {
     const label = `${clue.id} ${clue.text} [${clue.length}]`;
     const line = truncateText(label, width);
-    return clue.id === activeClue?.id ? color(`> ${line}`, "1;30;47") : `  ${line}`;
+    return clue.id === activeClue?.id ? color(`> ${line}`, activeStyleCode) : `  ${line}`;
   });
 };
 
 const buildPanelLines = (state, panelWidth, termRows) => {
-  const activeClue = getClueForCell(state.puzzle, state.selection, state.direction);
   const headerLines = [
     color(truncateText(state.puzzle.title, panelWidth), "1;36"),
     truncateText(`${state.puzzle.author} | ${state.puzzle.date}`, panelWidth),
     truncateText(`Source: ${state.puzzle.source}`, panelWidth),
     truncateText(state.puzzle.relativePath, panelWidth),
     "",
-    color(
-      `Clues (${state.direction === "across" ? "across" : "down"})`,
-      "1;33",
-    ),
   ];
 
   const controls = [
@@ -787,19 +810,44 @@ const buildPanelLines = (state, panelWidth, termRows) => {
     "Next:     Tab",
     "Previous: Shift+Tab",
     "Switch:   Space",
+    state.checkMode
+      ? `Check:    / ${color("(on)", "38;5;240")}`
+      : "Check:    /",
   ];
-  const clueWindowHeight = Math.max(
-    3,
-    termRows - headerLines.length - controls.length - 2,
+  const clueSectionTitles = [
+    color("Across", "1;33"),
+    color("Down", "1;33"),
+  ];
+  const availableClueRows = Math.max(
+    6,
+    termRows - headerLines.length - controls.length - clueSectionTitles.length,
   );
-  const clueLines = buildClueWindow(
-    getCluesForDirection(state.puzzle, state.direction),
-    activeClue,
+  const clueWindowHeight = Math.max(3, Math.floor(availableClueRows / 2));
+  const acrossClue = getClueForCell(state.puzzle, state.selection, "across");
+  const downClue = getClueForCell(state.puzzle, state.selection, "down");
+  const acrossLines = buildClueWindow(
+    state.puzzle.acrossClues,
+    acrossClue,
     Math.max(8, panelWidth - 2),
     clueWindowHeight,
+    state.direction === "across" ? "30;48;5;153" : "1;30;47",
+  );
+  const downLines = buildClueWindow(
+    state.puzzle.downClues,
+    downClue,
+    Math.max(8, panelWidth - 2),
+    clueWindowHeight,
+    state.direction === "down" ? "30;48;5;153" : "1;30;47",
   );
 
-  return [...headerLines, ...clueLines, ...controls];
+  return [
+    ...headerLines,
+    clueSectionTitles[0],
+    ...acrossLines,
+    clueSectionTitles[1],
+    ...downLines,
+    ...controls,
+  ];
 };
 
 export const createGameSession = ({
@@ -824,7 +872,11 @@ export const createGameSession = ({
       return;
     }
 
-    const boardLines = buildBoardLines(state);
+    const boardLines = [
+      ...buildBoardLines(state),
+      "",
+      ...buildSelectedClueLines(state),
+    ];
     const boardWidth = boardLines.reduce(
       (max, line) => Math.max(max, getVisibleWidth(line)),
       0,
@@ -869,6 +921,12 @@ export const createGameSession = ({
 
         if (token === " ") {
           toggleDirection(state);
+          render();
+          continue;
+        }
+
+        if (token === "/") {
+          state.checkMode = !state.checkMode;
           render();
           continue;
         }
