@@ -14,6 +14,19 @@ const GAME_MIN_ROWS = 37;
 const MENU_MIN_COLS = 60;
 const MENU_MIN_ROWS = 22;
 const CELL_WIDTH = 6;
+const NOTE_BANNER_STYLE = "1;38;5;15;48;5;160";
+const NOTE_ENTRY_OPTIONS = [
+  {
+    id: "allow",
+    label: "Allow impossible candidates",
+    description: "No warning; entered notes stay normal.",
+  },
+  {
+    id: "warn",
+    label: "Mark impossible candidates red",
+    description: "Warn visually when a note cannot fit.",
+  },
+];
 const THEMES = {
   light: {
     name: "Light",
@@ -92,6 +105,8 @@ const colorBorder = (paint, theme, text, weight = "minor") =>
 const createCell = (value) => (value === "-" ? "" : value);
 
 const toBoard = (sequence) => sequence.split("").map(createCell);
+
+const createManualCandidates = () => Array.from({ length: 81 }, () => []);
 
 const getCandidatesForCell = (board, index) => {
   if (board[index]) {
@@ -255,6 +270,14 @@ const buildHorizontalBorder = ({
 const isSolvedBoard = (board, solution) =>
   board.every((value, index) => value === solution[index]);
 
+const toggleCandidateDigit = (candidates, digit) => {
+  if (candidates.includes(digit)) {
+    return candidates.filter((candidate) => candidate !== digit);
+  }
+
+  return [...candidates, digit].sort();
+};
+
 const getCellColorCode = ({
   conflicts,
   cursor,
@@ -301,18 +324,85 @@ const getCandidateColorCode = ({ cursor, index, theme }) => {
   return theme.candidate;
 };
 
+const getEmptyCellColorCode = ({ cursor, index, theme }) => {
+  if (index === cursor) {
+    return `${theme.digit};${theme.selectedBackground}`;
+  }
+
+  return theme.baseStyle;
+};
+
+const buildManualCandidateArt = ({
+  board,
+  cursor,
+  index,
+  manualCandidates,
+  manualCandidatePolicy,
+  paint,
+  theme,
+}) => {
+  const availableCandidates = new Set(getCandidatesForCell(board, index));
+  const emptyColorCode = getEmptyCellColorCode({ cursor, index, theme });
+  const noteColor = (digit) => {
+    const shouldWarn =
+      manualCandidatePolicy === "warn" && !availableCandidates.has(digit);
+    const baseColor = shouldWarn ? theme.conflict : theme.candidate;
+
+    if (index === cursor) {
+      return `${baseColor};${theme.selectedBackground}`;
+    }
+
+    return baseColor;
+  };
+  const renderDigit = (digit) =>
+    manualCandidates.includes(digit)
+      ? paint(digit, noteColor(digit))
+      : paint(" ", emptyColorCode);
+  const renderSpacer = () => paint(" ", emptyColorCode);
+
+  return Array.from({ length: 3 }, (_, row) => {
+    const offset = row * 3;
+
+    return [
+      renderDigit(String(offset + 1)),
+      renderSpacer(),
+      renderDigit(String(offset + 2)),
+      renderSpacer(),
+      renderDigit(String(offset + 3)),
+      renderSpacer(),
+    ].join("");
+  });
+};
+
 const getRenderedCellLines = ({
   board,
   conflicts,
   cursor,
   index,
   lockedCells,
+  manualCandidatePolicy,
+  manualCandidates,
   paint,
   showCandidates,
   theme,
 }) => {
   const value = board[index];
+  const cellManualCandidates = manualCandidates[index];
+  const hasManualCandidates = !value && cellManualCandidates.length > 0;
   const isCandidateCell = !value && showCandidates;
+
+  if (hasManualCandidates && !showCandidates) {
+    return buildManualCandidateArt({
+      board,
+      cursor,
+      index,
+      manualCandidates: cellManualCandidates,
+      manualCandidatePolicy,
+      paint,
+      theme,
+    });
+  }
+
   const art = value
     ? CENTERED_DIGIT_ART[value]
     : isCandidateCell
@@ -350,6 +440,8 @@ const buildBoardLines = ({
   conflicts,
   cursor,
   lockedCells,
+  manualCandidatePolicy,
+  manualCandidates,
   paint,
   showCandidates,
   theme,
@@ -379,6 +471,8 @@ const buildBoardLines = ({
         cursor,
         index,
         lockedCells,
+        manualCandidatePolicy,
+        manualCandidates,
         paint,
         showCandidates,
         theme,
@@ -453,19 +547,34 @@ const buildBoardLines = ({
   return lines;
 };
 
-const buildControlLines = (theme, paint) => [
-  paint("Controls", theme.title),
-  "",
-  "Move:  arrows / hjkl",
-  "Fill:  1-9",
-  "Cand:  c",
-  "Clear: 0 . backspace",
-  "Reset: r",
-  "New:   n",
-  "Diff:  d",
-  `Theme: m (${theme.name})`,
-  "Quit:  q",
-];
+const buildControlLines = (theme, paint, manualCandidateMode) => {
+  const lines = [
+    paint("Controls", theme.title),
+    "",
+    "Move:  arrows / hjkl",
+    "Fill:  1-9",
+    "Cand:  c",
+    "Notes: v",
+    "Clear: 0 . backspace",
+    "Reset: r",
+    "New:   n",
+    "Diff:  d",
+    `Theme: m (${theme.name})`,
+    "Quit:  q",
+  ];
+
+  if (!manualCandidateMode) {
+    return lines;
+  }
+
+  return [
+    ...lines,
+    "",
+    "",
+    paint(" NOTE ENTRY ACTIVE ", NOTE_BANNER_STYLE),
+    paint(" Press v to exit. ", NOTE_BANNER_STYLE),
+  ];
+};
 
 const buildWinModalLines = (theme, paint) => [
   paint("╔══════════════════════════╗", theme.modalFrame),
@@ -483,6 +592,42 @@ const buildWinModalLines = (theme, paint) => [
   paint("║                          ║", theme.modalFrame),
   paint("╚══════════════════════════╝", theme.modalFrame),
 ];
+
+const buildNoteEntryModalLines = ({ noteEntryOptionIndex, paint, theme }) => {
+  const innerWidth = 54;
+  const contentWidth = innerWidth - 2;
+  const top = paint(`╔${"═".repeat(innerWidth)}╗`, theme.modalFrame);
+  const bottom = paint(`╚${"═".repeat(innerWidth)}╝`, theme.modalFrame);
+  const blank =
+    paint("║", theme.modalFrame) +
+    " ".repeat(innerWidth) +
+    paint("║", theme.modalFrame);
+  const frameLine = (content = "") =>
+    paint("║", theme.modalFrame) +
+    ` ${padVisibleEnd(content, contentWidth)} ` +
+    paint("║", theme.modalFrame);
+  const optionLines = NOTE_ENTRY_OPTIONS.flatMap((option, index) => {
+    const isSelected = index === noteEntryOptionIndex;
+    const label = isSelected
+      ? paint(`> ${option.label}`, theme.menuSelected)
+      : `  ${option.label}`;
+
+    return [frameLine(label), frameLine(`    ${option.description}`), blank];
+  });
+
+  return [
+    top,
+    blank,
+    frameLine(paint("Manual Candidate Entry", theme.sectionTitle)),
+    blank,
+    frameLine("Choose how impossible notes behave."),
+    frameLine("Use arrows or hjkl, then press Enter."),
+    blank,
+    ...optionLines,
+    frameLine("Press v to cancel."),
+    bottom,
+  ];
+};
 
 const renderOverlay = ({
   boardLines,
@@ -510,8 +655,10 @@ const renderOverlay = ({
   const overlayHeight = overlayLines.length;
   const startCol = Math.max(1, Math.floor((cols - layoutWidth) / 2) + 1);
   const startRow = Math.max(1, Math.floor((rows - layoutHeight) / 2) + 1);
-  const overlayCol = startCol + Math.max(0, Math.floor((boardWidth - overlayWidth) / 2));
-  const overlayRow = startRow + Math.max(0, Math.floor((boardHeight - overlayHeight) / 2));
+  const overlayCol =
+    startCol + Math.max(0, Math.floor((boardWidth - overlayWidth) / 2));
+  const overlayRow =
+    startRow + Math.max(0, Math.floor((boardHeight - overlayHeight) / 2));
 
   overlayLines.forEach((line, index) => {
     stream.write(
@@ -532,6 +679,15 @@ export const createGameSession = ({
   let termSize = initialTermSize;
   let cursor = 0;
   let showCandidates = false;
+  let manualCandidateMode = false;
+  let manualCandidatePolicy = null;
+  let manualCandidates = createManualCandidates();
+  let noteEntryMenu = {
+    active: false,
+    selectedIndex: NOTE_ENTRY_OPTIONS.findIndex(
+      (option) => option.id === "warn",
+    ),
+  };
   let puzzleState = null;
   let themeName = THEME_ORDER[0];
   let difficultyMenu = {
@@ -544,7 +700,8 @@ export const createGameSession = ({
 
   const toggleTheme = () => {
     const currentIndex = THEME_ORDER.indexOf(themeName);
-    const nextIndex = (currentIndex + 1 + THEME_ORDER.length) % THEME_ORDER.length;
+    const nextIndex =
+      (currentIndex + 1 + THEME_ORDER.length) % THEME_ORDER.length;
     themeName = THEME_ORDER[nextIndex];
   };
 
@@ -552,6 +709,8 @@ export const createGameSession = ({
     puzzleState = createPuzzleState(difficulty);
     cursor = 0;
     showCandidates = false;
+    manualCandidateMode = false;
+    manualCandidates = createManualCandidates();
   };
 
   const openDifficultyMenu = ({
@@ -576,6 +735,36 @@ export const createGameSession = ({
     const difficulty = DIFFICULTIES[difficultyMenu.selectedIndex] ?? "medium";
     resetPuzzle(difficulty);
     closeDifficultyMenu();
+  };
+
+  const openNoteEntryMenu = () => {
+    const selectedIndex = Math.max(
+      0,
+      NOTE_ENTRY_OPTIONS.findIndex(
+        (option) => option.id === (manualCandidatePolicy ?? "warn"),
+      ),
+    );
+
+    noteEntryMenu = {
+      active: true,
+      selectedIndex,
+    };
+  };
+
+  const closeNoteEntryMenu = () => {
+    noteEntryMenu = {
+      ...noteEntryMenu,
+      active: false,
+    };
+  };
+
+  const confirmNoteEntryMode = () => {
+    const selectedOption =
+      NOTE_ENTRY_OPTIONS[noteEntryMenu.selectedIndex] ?? NOTE_ENTRY_OPTIONS[1];
+    manualCandidatePolicy = selectedOption.id;
+    manualCandidateMode = true;
+    showCandidates = false;
+    closeNoteEntryMenu();
   };
 
   const render = () => {
@@ -614,7 +803,9 @@ export const createGameSession = ({
         const selected = index === difficultyMenu.selectedIndex;
         const label = difficulty[0].toUpperCase() + difficulty.slice(1);
 
-        return selected ? paint(`> ${label}`, theme.menuSelected) : `  ${label}`;
+        return selected
+          ? paint(`> ${label}`, theme.menuSelected)
+          : `  ${label}`;
       });
 
       renderCentered(
@@ -642,15 +833,33 @@ export const createGameSession = ({
       conflicts,
       cursor,
       lockedCells,
+      manualCandidatePolicy,
+      manualCandidates,
       paint,
       showCandidates,
       theme,
     });
-    const controlLines = buildControlLines(theme, paint);
+    const controlLines = buildControlLines(theme, paint, manualCandidateMode);
 
     const lines = joinColumns(boardLines, controlLines);
 
     renderCentered(stream, termSize, lines, renderOptions);
+
+    if (noteEntryMenu.active) {
+      renderOverlay({
+        boardLines,
+        layoutLines: lines,
+        overlayLines: buildNoteEntryModalLines({
+          noteEntryOptionIndex: noteEntryMenu.selectedIndex,
+          paint,
+          theme,
+        }),
+        stream,
+        termSize,
+        theme,
+      });
+      return;
+    }
 
     if (isSolved) {
       renderOverlay({
@@ -670,6 +879,7 @@ export const createGameSession = ({
     }
 
     puzzleState.board[cursor] = digit;
+    manualCandidates[cursor] = [];
   };
 
   const clearDigit = () => {
@@ -682,6 +892,29 @@ export const createGameSession = ({
     }
 
     puzzleState.board[cursor] = "";
+  };
+
+  const toggleManualCandidate = (digit) => {
+    if (puzzleState.lockedCells[cursor] || puzzleState.board[cursor]) {
+      return;
+    }
+
+    manualCandidates[cursor] = toggleCandidateDigit(
+      manualCandidates[cursor],
+      digit,
+    );
+  };
+
+  const clearManualCandidates = () => {
+    if (puzzleState.lockedCells[cursor] || puzzleState.board[cursor]) {
+      return;
+    }
+
+    if (manualCandidates[cursor].length === 0) {
+      return;
+    }
+
+    manualCandidates[cursor] = [];
   };
 
   const moveDifficultySelection = (delta) => {
@@ -720,9 +953,51 @@ export const createGameSession = ({
     render();
   };
 
+  const handleNoteEntryMenuToken = (token) => {
+    switch (token) {
+      case "\u0003":
+      case "q":
+        closeConnection(0);
+        return;
+      case "m":
+      case "M":
+        toggleTheme();
+        break;
+      case "ESC[A":
+      case "k":
+        noteEntryMenu.selectedIndex =
+          (noteEntryMenu.selectedIndex - 1 + NOTE_ENTRY_OPTIONS.length) %
+          NOTE_ENTRY_OPTIONS.length;
+        break;
+      case "ESC[B":
+      case "j":
+        noteEntryMenu.selectedIndex =
+          (noteEntryMenu.selectedIndex + 1) % NOTE_ENTRY_OPTIONS.length;
+        break;
+      case "\r":
+      case "\n":
+      case " ":
+        confirmNoteEntryMode();
+        break;
+      case "v":
+      case "V":
+        closeNoteEntryMenu();
+        break;
+      default:
+        break;
+    }
+
+    render();
+  };
+
   const handleToken = (token) => {
     if (difficultyMenu.active) {
       handleDifficultyToken(token);
+      return;
+    }
+
+    if (noteEntryMenu.active) {
+      handleNoteEntryMenuToken(token);
       return;
     }
 
@@ -753,10 +1028,23 @@ export const createGameSession = ({
         break;
       case "r":
         puzzleState.board = [...puzzleState.initialBoard];
+        manualCandidates = createManualCandidates();
+        manualCandidateMode = false;
         break;
       case "c":
       case "C":
+        if (!showCandidates) {
+          manualCandidateMode = false;
+        }
         showCandidates = !showCandidates;
+        break;
+      case "v":
+      case "V":
+        if (manualCandidateMode) {
+          manualCandidateMode = false;
+        } else {
+          openNoteEntryMenu();
+        }
         break;
       case "n":
         openDifficultyMenu({
@@ -776,11 +1064,19 @@ export const createGameSession = ({
       case " ":
       case "\u007f":
       case "ESC[3~":
-        clearDigit();
+        if (manualCandidateMode) {
+          clearManualCandidates();
+        } else {
+          clearDigit();
+        }
         break;
       default:
         if (/^[1-9]$/.test(token)) {
-          writeDigit(token);
+          if (manualCandidateMode) {
+            toggleManualCandidate(token);
+          } else {
+            writeDigit(token);
+          }
         }
         break;
     }
