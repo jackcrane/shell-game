@@ -446,11 +446,14 @@ const buildControlLines = () => [
 ];
 
 const buildWinModalLines = () => [
-  color("╔══════════════════════╗", "30;47"),
-  color("║", "30;47") + color("       You Win        ", "1;30;47") + color("║", "30;47"),
-  color("║", "30;47") + color("   Puzzle complete.   ", "30;47") + color("║", "30;47"),
-  color("║", "30;47") + color(" Press n for a new one", "30;47") + color("║", "30;47"),
-  color("╚══════════════════════╝", "30;47"),
+  color("╔══════════════════════════╗", "30;47"),
+  color("║                          ║", "30;47"),
+  color("║", "30;47") + color("         You Win          ", "1;30;47") + color("║", "30;47"),
+  color("║                          ║", "30;47"),
+  color("║", "30;47") + color("    Puzzle complete.      ", "30;47") + color("║", "30;47"),
+  color("║", "30;47") + color("   Press n for a new one  ", "30;47") + color("║", "30;47"),
+  color("║                          ║", "30;47"),
+  color("╚══════════════════════════╝", "30;47"),
 ];
 
 const renderOverlay = ({
