@@ -6,9 +6,13 @@ import {
 } from "../../lib/session-ui.js";
 
 const DIFFICULTIES = ["easy", "medium", "hard", "expert"];
-const MIN_COLS = 72;
-const MIN_ROWS = 22;
+const GAME_MIN_COLS = 90;
+const GAME_MIN_ROWS = 37;
 const MENU_MIN_COLS = 60;
+const MENU_MIN_ROWS = 22;
+const CELL_WIDTH = 6;
+const BORDER_COLOR = "90";
+const DIGIT_COLOR = "30";
 const MENU_TITLE = [
   "███████╗██╗   ██╗██████╗  ██████╗ ██╗  ██╗██╗   ██╗",
   "██╔════╝██║   ██║██╔══██╗██╔═══██╗██║ ██╔╝██║   ██║",
@@ -20,6 +24,27 @@ const MENU_TITLE = [
   "",
   "",
 ];
+const EMPTY_CELL_ART = ["      ", "      ", "      "];
+const DIGIT_ART = {
+  "1": ["╺┓ ", " ┃ ", "╺┻╸"],
+  "2": ["┏━┓", "┏━┛", "┗━╸"],
+  "3": ["┏━┓", "╺━┫", "┗━┛"],
+  "4": ["╻ ╻", "┗━┫", "  ╹"],
+  "5": ["┏━╸", "┗━┓", "┗━┛"],
+  "6": ["┏━┓", "┣━┓", "┗━┛"],
+  "7": ["┏━┓", "  ┃", "  ╹"],
+  "8": ["┏━┓", "┣━┫", "┗━┛"],
+  "9": ["┏━┓", "┗━┫", "┗━┛"],
+};
+const colorBorder = (text) => color(text, BORDER_COLOR);
+const centerArtLine = (line) => ` ${line}  `;
+
+const CENTERED_DIGIT_ART = Object.fromEntries(
+  Object.entries(DIGIT_ART).map(([digit, lines]) => [
+    digit,
+    lines.map(centerArtLine),
+  ]),
+);
 
 const createCell = (value) => (value === "-" ? "" : value);
 
@@ -158,46 +183,149 @@ const joinColumns = (leftLines, rightLines, gap = "    ") => {
   return lines;
 };
 
+const buildHorizontalBorder = ({ left, minor, major, right, fill }) => {
+  let line = colorBorder(left);
+
+  for (let col = 0; col < 9; col += 1) {
+    line += colorBorder(fill.repeat(CELL_WIDTH));
+
+    if (col === 8) {
+      line += colorBorder(right);
+    } else if ((col + 1) % 3 === 0) {
+      line += colorBorder(major);
+    } else {
+      line += colorBorder(minor);
+    }
+  }
+
+  return line;
+};
+
+const getCellColorCode = ({
+  conflicts,
+  cursor,
+  index,
+  value,
+}) => {
+  if (index === cursor && conflicts.has(index)) {
+    return `${DIGIT_COLOR};41`;
+  }
+
+  if (index === cursor && value) {
+    return `${DIGIT_COLOR};47`;
+  }
+
+  if (index === cursor) {
+    return `${DIGIT_COLOR};47`;
+  }
+
+  if (conflicts.has(index)) {
+    return `${DIGIT_COLOR};41`;
+  }
+
+  if (value) {
+    return DIGIT_COLOR;
+  }
+
+  return "0";
+};
+
+const getRenderedCellLines = ({
+  board,
+  conflicts,
+  cursor,
+  index,
+  lockedCells,
+}) => {
+  const value = board[index];
+  const art = CENTERED_DIGIT_ART[value] ?? EMPTY_CELL_ART;
+  const colorCode = getCellColorCode({
+    conflicts,
+    cursor,
+    index,
+    value,
+  });
+
+  return art.map((line) => color(line, colorCode));
+};
+
 const buildBoardLines = ({ board, conflicts, cursor, lockedCells }) => {
-  const lines = ["    1 2 3   4 5 6   7 8 9", "  +-------+-------+-------+"];
+  const lines = [
+    buildHorizontalBorder({
+      left: "┏",
+      minor: "┯",
+      major: "┳",
+      right: "┓",
+      fill: "━",
+    }),
+  ];
 
   for (let row = 0; row < 9; row += 1) {
-    const cells = [];
+    const renderedRow = [[], [], []];
 
     for (let col = 0; col < 9; col += 1) {
       const index = row * 9 + col;
-      const isCursor = index === cursor;
-      const rawValue = board[index] || ".";
-      let text = rawValue;
+      const cellLines = getRenderedCellLines({
+        board,
+        conflicts,
+        cursor,
+        index,
+        lockedCells,
+      });
 
-      if (isCursor && lockedCells[index]) {
-        text = color(rawValue, "1;30;46");
-      } else if (isCursor && conflicts.has(index)) {
-        text = color(rawValue, "1;37;41");
-      } else if (isCursor && board[index]) {
-        text = color(rawValue, "1;30;47");
-      } else if (isCursor) {
-        text = color(rawValue, "2;30;47");
-      } else if (lockedCells[index]) {
-        text = color(rawValue, "1;36");
-      } else if (conflicts.has(index)) {
-        text = color(rawValue, "1;31");
-      } else if (board[index]) {
-        text = color(rawValue, "1;37");
-      } else {
-        text = color(rawValue, "2;37");
+      for (let lineIndex = 0; lineIndex < 3; lineIndex += 1) {
+        renderedRow[lineIndex].push(cellLines[lineIndex]);
       }
-
-      cells.push(text);
     }
 
-    const rowLabel = String.fromCharCode(65 + row);
-    lines.push(
-      `${rowLabel} | ${cells.slice(0, 3).join(" ")} | ${cells.slice(3, 6).join(" ")} | ${cells.slice(6, 9).join(" ")} |`,
-    );
+    for (let lineIndex = 0; lineIndex < 3; lineIndex += 1) {
+      let line = colorBorder("┃");
 
-    if ((row + 1) % 3 === 0) {
-      lines.push("  +-------+-------+-------+");
+      for (let col = 0; col < 9; col += 1) {
+        line += renderedRow[lineIndex][col];
+
+        if (col === 8) {
+          line += colorBorder("┃");
+        } else if ((col + 1) % 3 === 0) {
+          line += colorBorder("┃");
+        } else {
+          line += colorBorder("│");
+        }
+      }
+
+      lines.push(line);
+    }
+
+    if (row === 8) {
+      lines.push(
+        buildHorizontalBorder({
+          left: "┗",
+          minor: "┷",
+          major: "┻",
+          right: "┛",
+          fill: "━",
+        }),
+      );
+    } else if ((row + 1) % 3 === 0) {
+      lines.push(
+        buildHorizontalBorder({
+          left: "┣",
+          minor: "╋",
+          major: "╋",
+          right: "┫",
+          fill: "━",
+        }),
+      );
+    } else {
+      lines.push(
+        buildHorizontalBorder({
+          left: "┠",
+          minor: "┼",
+          major: "╂",
+          right: "┨",
+          fill: "─",
+        }),
+      );
     }
   }
 
@@ -264,15 +392,14 @@ export const createGameSession = ({
   };
 
   const render = () => {
-    const requiredCols = difficultyMenu.active
-      ? Math.max(MIN_COLS, MENU_MIN_COLS)
-      : MIN_COLS;
+    const requiredCols = difficultyMenu.active ? MENU_MIN_COLS : GAME_MIN_COLS;
+    const requiredRows = difficultyMenu.active ? MENU_MIN_ROWS : GAME_MIN_ROWS;
 
-    if ((termSize?.cols ?? 0) < requiredCols || (termSize?.rows ?? 0) < MIN_ROWS) {
+    if ((termSize?.cols ?? 0) < requiredCols || (termSize?.rows ?? 0) < requiredRows) {
       renderCentered(stream, termSize, [
         color("Terminal too small", "1;31"),
         "",
-        `Need at least ${requiredCols}x${MIN_ROWS}`,
+        `Need at least ${requiredCols}x${requiredRows}`,
         `Current size: ${termSize?.cols ?? 0}x${termSize?.rows ?? 0}`,
         "",
         "Resize the terminal to continue.",
