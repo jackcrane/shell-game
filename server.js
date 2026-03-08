@@ -1,3 +1,4 @@
+import "./games/crossword/index.js";
 import { startServer } from "./lib/ssh-game-server.js";
 
 startServer().catch((error) => {

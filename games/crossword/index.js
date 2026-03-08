@@ -15,10 +15,13 @@ export const metadata = {
 
 const DATA_DIR = path.resolve(process.cwd(), "games", "crossword", "data");
 const TYPOGRAPHY_PATH = path.resolve(process.cwd(), "typography.txt");
-const MIN_COLS = 156;
-const MIN_ROWS = 50;
 const PANEL_GAP = "    ";
+const HARD_MIN_COLS = 135;
+const HARD_MIN_ROWS = 38;
+const MIN_PANEL_WIDTH = 34;
+const MIN_PANEL_ROWS = 21;
 const MAX_PANEL_WIDTH = 58;
+const TOP_FITTING_PUZZLE_COUNT = 150;
 const CELL_WIDTH = 6;
 const CELL_HEIGHT = 3;
 const EMPTY_CELL_ART = ["      ", "  ..  ", "      "];
@@ -158,44 +161,47 @@ const formatElapsed = (milliseconds) => {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 };
 
-const chooseRandomPuzzleFile = (rootDir) => {
-  if (!fs.existsSync(rootDir)) {
-    return null;
-  }
+const listPuzzleFiles = (() => {
+  const cache = new Map();
 
-  let selectedPath = null;
-  let seenCount = 0;
-
-  const visitDirectory = (dirPath) => {
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-
-    for (const entry of entries) {
-      if (entry.name.startsWith(".")) {
-        continue;
-      }
-
-      const fullPath = path.join(dirPath, entry.name);
-
-      if (entry.isDirectory()) {
-        visitDirectory(fullPath);
-        continue;
-      }
-
-      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".xd")) {
-        continue;
-      }
-
-      seenCount += 1;
-
-      if (Math.random() < 1 / seenCount) {
-        selectedPath = fullPath;
-      }
+  return (rootDir) => {
+    if (cache.has(rootDir)) {
+      return cache.get(rootDir);
     }
-  };
 
-  visitDirectory(rootDir);
-  return selectedPath;
-};
+    if (!fs.existsSync(rootDir)) {
+      cache.set(rootDir, []);
+      return [];
+    }
+
+    const puzzleFiles = [];
+
+    const visitDirectory = (dirPath) => {
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+
+      for (const entry of entries) {
+        if (entry.name.startsWith(".")) {
+          continue;
+        }
+
+        const fullPath = path.join(dirPath, entry.name);
+
+        if (entry.isDirectory()) {
+          visitDirectory(fullPath);
+          continue;
+        }
+
+        if (entry.isFile() && entry.name.toLowerCase().endsWith(".xd")) {
+          puzzleFiles.push(fullPath);
+        }
+      }
+    };
+
+    visitDirectory(rootDir);
+    cache.set(rootDir, puzzleFiles);
+    return puzzleFiles;
+  };
+})();
 
 const parseClueLine = (line) => {
   const match = /^([AD])(\d+)\.\s*(.*)$/.exec(line.trim());
@@ -432,14 +438,155 @@ const parsePuzzleFile = (filePath) => {
   };
 };
 
-const loadRandomPuzzle = () => {
-  const puzzlePath = chooseRandomPuzzleFile(DATA_DIR);
+const getSelectedClueMetrics = (puzzle) => {
+  if (puzzle.selectedClueMetrics) {
+    return puzzle.selectedClueMetrics;
+  }
 
-  if (!puzzlePath) {
+  const totalWidth = puzzle.width * CELL_WIDTH + 2;
+  const wrapWidth = Math.max(1, totalWidth - 2);
+  let maxLineCount = 1;
+  let maxLineWidth = totalWidth;
+
+  for (const clue of puzzle.cluesById.values()) {
+    const wrappedLines = wrapText(`${clue.id}. ${clue.text}`, wrapWidth);
+    maxLineCount = Math.max(maxLineCount, wrappedLines.length);
+
+    for (const line of wrappedLines) {
+      maxLineWidth = Math.max(maxLineWidth, line.length + 2);
+    }
+  }
+
+  puzzle.selectedClueMetrics = {
+    maxLineCount,
+    maxLineWidth,
+  };
+  return puzzle.selectedClueMetrics;
+};
+
+const meetsHardMinimum = (termSize) => {
+  const { cols, rows } = getTerminalSize(termSize);
+  return cols >= HARD_MIN_COLS && rows >= HARD_MIN_ROWS;
+};
+
+const getMinimumTermSizeForPuzzle = (puzzle) => {
+  const { maxLineCount, maxLineWidth } = getSelectedClueMetrics(puzzle);
+
+  return {
+    cols: Math.max(
+      HARD_MIN_COLS,
+      maxLineWidth + PANEL_GAP.length + MIN_PANEL_WIDTH,
+    ),
+    rows: Math.max(
+      HARD_MIN_ROWS,
+      MIN_PANEL_ROWS,
+      puzzle.height * CELL_HEIGHT + 3 + maxLineCount,
+    ),
+  };
+};
+
+const puzzleFitsTermSize = (puzzle, termSize) => {
+  const { cols, rows } = getTerminalSize(termSize);
+  const minimumSize = getMinimumTermSizeForPuzzle(puzzle);
+  return cols >= minimumSize.cols && rows >= minimumSize.rows;
+};
+
+const comparePuzzleIndexEntries = (left, right) => {
+  const areaDelta = right.area - left.area;
+
+  if (areaDelta !== 0) {
+    return areaDelta;
+  }
+
+  if (right.width !== left.width) {
+    return right.width - left.width;
+  }
+
+  if (right.height !== left.height) {
+    return right.height - left.height;
+  }
+
+  return left.filePath.localeCompare(right.filePath);
+};
+
+const buildPuzzleIndex = () => {
+  const puzzleFiles = listPuzzleFiles(DATA_DIR);
+
+  if (puzzleFiles.length === 0) {
     throw new Error(`No crossword puzzles were found under ${DATA_DIR}.`);
   }
 
-  return parsePuzzleFile(puzzlePath);
+  const puzzleIndex = [];
+  let skippedCount = 0;
+
+  for (const filePath of puzzleFiles) {
+    try {
+      const puzzle = parsePuzzleFile(filePath);
+      const minimumSize = getMinimumTermSizeForPuzzle(puzzle);
+
+      puzzleIndex.push({
+        area: puzzle.width * puzzle.height,
+        filePath,
+        height: puzzle.height,
+        minCols: minimumSize.cols,
+        minRows: minimumSize.rows,
+        width: puzzle.width,
+      });
+    } catch {
+      skippedCount += 1;
+    }
+  }
+
+  if (puzzleIndex.length === 0) {
+    throw new Error(`No valid crossword puzzles were found under ${DATA_DIR}.`);
+  }
+
+  if (skippedCount > 0) {
+    console.warn(
+      `Skipped ${skippedCount} invalid crossword puzzle${skippedCount === 1 ? "" : "s"} while building the index.`,
+    );
+  }
+
+  puzzleIndex.sort(comparePuzzleIndexEntries);
+  return puzzleIndex;
+};
+
+const PUZZLE_INDEX = buildPuzzleIndex();
+
+const chooseFittingPuzzle = (termSize, { excludeFilePath = null } = {}) => {
+  const { cols, rows } = getTerminalSize(termSize);
+  const candidates = [];
+  let attempts = 0;
+
+  for (const entry of PUZZLE_INDEX) {
+    attempts += 1;
+
+    if (cols < entry.minCols || rows < entry.minRows) {
+      continue;
+    }
+
+    if (excludeFilePath && entry.filePath === excludeFilePath) {
+      continue;
+    }
+
+    candidates.push(entry);
+
+    if (candidates.length >= TOP_FITTING_PUZZLE_COUNT) {
+      break;
+    }
+  }
+
+  if (candidates.length === 0) {
+    return { attempts, puzzle: null };
+  }
+
+  const selectedEntry =
+    candidates[Math.floor(Math.random() * candidates.length)];
+
+  return {
+    attempts,
+    puzzle: parsePuzzleFile(selectedEntry.filePath),
+  };
 };
 
 const getCluesForDirection = (puzzle, direction) =>
@@ -487,11 +634,6 @@ const createSessionState = (puzzle) => ({
   status:
     "Type letters to fill the grid. Tab advances clues; space switches direction.",
 });
-
-const hasEnoughRoom = (termSize) => {
-  const { cols, rows } = getTerminalSize(termSize);
-  return cols >= MIN_COLS && rows >= MIN_ROWS;
-};
 
 const moveSelection = (state, rowDelta, colDelta) => {
   const { puzzle } = state;
@@ -841,6 +983,7 @@ const buildPanelLines = (state, panelWidth, termRows) => {
     "Move:     Arrows",
     "Clear:    Backspace",
     "Next:     Tab",
+    "New:      [",
     "Previous: Shift+Tab",
     "Switch:   Space",
     state.checkMode
@@ -886,18 +1029,77 @@ export const createGameSession = ({
   termSize: initialTermSize,
 }) => {
   let termSize = initialTermSize;
-  let state = createSessionState(loadRandomPuzzle());
+  const initializeState = () => {
+    if (!meetsHardMinimum(termSize)) {
+      return {
+        attempts: 0,
+        state: null,
+      };
+    }
+
+    const result = chooseFittingPuzzle(termSize);
+
+    return {
+      attempts: result.attempts,
+      state: result.puzzle ? createSessionState(result.puzzle) : null,
+    };
+  };
+  let { attempts: searchAttempts, state } = initializeState();
+
+  const startNewGame = () => {
+    if (!meetsHardMinimum(termSize)) {
+      return false;
+    }
+
+    const result = chooseFittingPuzzle(termSize, {
+      excludeFilePath: state?.puzzle.filePath ?? null,
+    });
+
+    if (!result.puzzle) {
+      return false;
+    }
+
+    searchAttempts = result.attempts;
+    state = createSessionState(result.puzzle);
+    state.status = "Loaded a new crossword.";
+    return true;
+  };
 
   const render = () => {
     const { cols, rows } = getTerminalSize(termSize);
 
-    if (!hasEnoughRoom(termSize)) {
+    if (!state) {
+      if (!meetsHardMinimum(termSize)) {
+        renderCentered(stream, termSize, [
+          "Terminal window is too small for crossword.",
+          `Need at least ${HARD_MIN_COLS} columns x ${HARD_MIN_ROWS} rows.`,
+          `Current size: ${cols} x ${rows}.`,
+          "",
+          "Enlarge the window and I'll try again.",
+        ]);
+        return;
+      }
+
       renderCentered(stream, termSize, [
         "Terminal window is too small.",
-        `Need at least ${MIN_COLS} columns x ${MIN_ROWS} rows.`,
         `Current size: ${cols} x ${rows}.`,
         "",
-        "Resize the window to play crossword.",
+        `Checked ${searchAttempts} indexed crosswords and couldn't find one that fits.`,
+        "Enlarge the window and I'll try again.",
+      ]);
+      return;
+    }
+
+    if (!puzzleFitsTermSize(state.puzzle, termSize)) {
+      const minimumSize = getMinimumTermSizeForPuzzle(state.puzzle);
+
+      renderCentered(stream, termSize, [
+        "Terminal window is too small for this crossword.",
+        `Need at least ${minimumSize.cols} columns x ${minimumSize.rows} rows.`,
+        `Current size: ${cols} x ${rows}.`,
+        "",
+        "Press [ to start a new game that fits this window.",
+        "Resize the window to keep playing.",
       ]);
       return;
     }
@@ -913,7 +1115,7 @@ export const createGameSession = ({
     );
     const panelWidth = Math.min(
       MAX_PANEL_WIDTH,
-      Math.max(34, cols - boardWidth - PANEL_GAP.length - 2),
+      Math.max(MIN_PANEL_WIDTH, cols - boardWidth - PANEL_GAP.length - 2),
     );
 
     renderCentered(
@@ -935,6 +1137,24 @@ export const createGameSession = ({
         if (token === "\u0003") {
           closeConnection(0);
           return;
+        }
+
+        if (token === "[") {
+          if (startNewGame()) {
+            render();
+            continue;
+          }
+
+          if (state) {
+            state.status = "No alternate crossword fits this window.";
+            render();
+          }
+
+          continue;
+        }
+
+        if (!state) {
+          continue;
         }
 
         if (token === "\t") {
@@ -1008,6 +1228,11 @@ export const createGameSession = ({
     },
     onResize(nextTermSize) {
       termSize = nextTermSize;
+
+      if (!state) {
+        ({ attempts: searchAttempts, state } = initializeState());
+      }
+
       render();
     },
   };
