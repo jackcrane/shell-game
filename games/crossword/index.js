@@ -3,10 +3,12 @@ import path from "path";
 import {
   ansiStyle,
   color,
+  createCenteredLayout,
   getTerminalSize,
   getVisibleWidth,
   parseInputTokens,
   renderCentered,
+  safeWrite,
 } from "../../lib/session-ui.js";
 
 export const metadata = {
@@ -27,6 +29,15 @@ const CELL_HEIGHT = 3;
 const EMPTY_CELL_ART = ["      ", "  ..  ", "      "];
 const BLOCK_CELL_ART = ["      ", "      ", "      "];
 const GLYPH_LEFT_PADDING = " ";
+const ROOM_PIN_LENGTH = 6;
+const MAX_ROOM_PLAYERS = 2;
+const JOIN_MODAL_INNER_WIDTH = 30;
+const DEFAULT_STATUS =
+  "Type letters to fill the grid. Tab advances clues; space switches direction.";
+const PARTNER_CLUE_BACKGROUND = "48;5;225";
+const PARTNER_SELECTION_BACKGROUND = "48;5;212";
+
+const MULTIPLAYER_ROOMS = new Map();
 
 const formatGlyphLine = (line) =>
   `${GLYPH_LEFT_PADDING}${line}`.slice(0, CELL_WIDTH).padEnd(CELL_WIDTH, " ");
@@ -619,25 +630,145 @@ const findSelectionForDirection = (puzzle, index, direction) => {
   return fallbackClue ? index : puzzle.firstOpenCell;
 };
 
-const createSessionState = (puzzle) => ({
-  checkMode: false,
-  direction: getClueForCell(puzzle, puzzle.firstOpenCell, "across")
-    ? "across"
-    : "down",
+const createRoomState = (puzzle) => ({
   entries: Array.from({ length: puzzle.cells.length }, (_, index) =>
     puzzle.cells[index].isBlock ? "#" : "",
   ),
   puzzle,
-  selection: puzzle.firstOpenCell,
   solved: false,
   startedAt: Date.now(),
-  status:
-    "Type letters to fill the grid. Tab advances clues; space switches direction.",
 });
 
-const moveSelection = (state, rowDelta, colDelta) => {
-  const { puzzle } = state;
-  const currentCell = getCell(puzzle, state.selection);
+const getDefaultDirection = (puzzle) =>
+  getClueForCell(puzzle, puzzle.firstOpenCell, "across") ? "across" : "down";
+
+const createJoinModalState = () => ({
+  error: "",
+  input: "",
+  open: false,
+});
+
+const createRoomPin = () => {
+  for (;;) {
+    const pin = String(
+      100000 + Math.floor(Math.random() * 900000),
+    ).padStart(ROOM_PIN_LENGTH, "0");
+
+    if (!MULTIPLAYER_ROOMS.has(pin)) {
+      return pin;
+    }
+  }
+};
+
+const createRoom = (puzzle) => {
+  const room = {
+    pin: createRoomPin(),
+    sessions: new Set(),
+    state: createRoomState(puzzle),
+  };
+  MULTIPLAYER_ROOMS.set(room.pin, room);
+  return room;
+};
+
+const resetSessionForPuzzle = (session, status = DEFAULT_STATUS) => {
+  const puzzle = session.room?.state.puzzle;
+
+  if (!puzzle) {
+    session.direction = "across";
+    session.selection = null;
+    session.status = status;
+    return;
+  }
+
+  session.direction = getDefaultDirection(puzzle);
+  session.selection = puzzle.firstOpenCell;
+  session.status = status;
+};
+
+const renderRoom = (room) => {
+  for (const session of room.sessions) {
+    session.render();
+  }
+};
+
+const detachSessionFromRoom = (
+  session,
+  { notifyRemaining = false, remainingMessage = "Partner left the game." } = {},
+) => {
+  const room = session.room;
+
+  if (!room) {
+    return;
+  }
+
+  room.sessions.delete(session);
+  session.room = null;
+
+  if (room.sessions.size === 0) {
+    MULTIPLAYER_ROOMS.delete(room.pin);
+    return;
+  }
+
+  if (notifyRemaining) {
+    for (const remainingSession of room.sessions) {
+      remainingSession.status = remainingMessage;
+    }
+  }
+
+  renderRoom(room);
+};
+
+const attachSessionToRoom = (session, room, status = DEFAULT_STATUS) => {
+  session.room = room;
+  room.sessions.add(session);
+  resetSessionForPuzzle(session, status);
+};
+
+const getSharedTermSize = (room) => {
+  let cols = Infinity;
+  let rows = Infinity;
+
+  for (const session of room.sessions) {
+    const termSize = getTerminalSize(session.termSize);
+    cols = Math.min(cols, termSize.cols);
+    rows = Math.min(rows, termSize.rows);
+  }
+
+  return {
+    cols: Number.isFinite(cols) ? cols : HARD_MIN_COLS,
+    rows: Number.isFinite(rows) ? rows : HARD_MIN_ROWS,
+  };
+};
+
+const ensureRoomForSession = (session) => {
+  if (session.room) {
+    return true;
+  }
+
+  if (!meetsHardMinimum(session.termSize)) {
+    session.searchAttempts = 0;
+    return false;
+  }
+
+  const result = chooseFittingPuzzle(session.termSize);
+  session.searchAttempts = result.attempts;
+
+  if (!result.puzzle) {
+    return false;
+  }
+
+  attachSessionToRoom(session, createRoom(result.puzzle));
+  return true;
+};
+
+const moveSelection = (session, rowDelta, colDelta) => {
+  const puzzle = session.room?.state.puzzle;
+
+  if (!puzzle || session.selection === null) {
+    return false;
+  }
+
+  const currentCell = getCell(puzzle, session.selection);
   let row = currentCell.row + rowDelta;
   let col = currentCell.col + colDelta;
 
@@ -645,7 +776,7 @@ const moveSelection = (state, rowDelta, colDelta) => {
     const nextCell = puzzle.cells[row * puzzle.width + col];
 
     if (!nextCell.isBlock) {
-      state.selection = nextCell.index;
+      session.selection = nextCell.index;
       return true;
     }
 
@@ -657,7 +788,13 @@ const moveSelection = (state, rowDelta, colDelta) => {
 };
 
 const moveWithinClue = (state, step) => {
-  const clue = getClueForCell(state.puzzle, state.selection, state.direction);
+  const puzzle = state.room?.state.puzzle;
+
+  if (!puzzle || state.selection === null) {
+    return false;
+  }
+
+  const clue = getClueForCell(puzzle, state.selection, state.direction);
 
   if (!clue) {
     return false;
@@ -680,17 +817,20 @@ const getPreferredClueSelection = (state, clue) => {
   }
 
   return (
-    clue.cells.find((cellIndex) => !state.entries[cellIndex]) ?? clue.cells[0]
+    clue.cells.find((cellIndex) => !state.room.state.entries[cellIndex]) ??
+    clue.cells[0]
   );
 };
 
 const jumpToAdjacentClue = (state, delta) => {
-  const clues = getCluesForDirection(state.puzzle, state.direction);
-  const activeClue = getClueForCell(
-    state.puzzle,
-    state.selection,
-    state.direction,
-  );
+  const puzzle = state.room?.state.puzzle;
+
+  if (!puzzle || state.selection === null) {
+    return;
+  }
+
+  const clues = getCluesForDirection(puzzle, state.direction);
+  const activeClue = getClueForCell(puzzle, state.selection, state.direction);
 
   if (!activeClue) {
     return;
@@ -707,12 +847,14 @@ const jumpToAdjacentClue = (state, delta) => {
 };
 
 const moveToAdjacentClueEdge = (state, delta) => {
-  const clues = getCluesForDirection(state.puzzle, state.direction);
-  const activeClue = getClueForCell(
-    state.puzzle,
-    state.selection,
-    state.direction,
-  );
+  const puzzle = state.room?.state.puzzle;
+
+  if (!puzzle || state.selection === null) {
+    return false;
+  }
+
+  const clues = getCluesForDirection(puzzle, state.direction);
+  const activeClue = getClueForCell(puzzle, state.selection, state.direction);
 
   if (!activeClue) {
     return false;
@@ -740,20 +882,33 @@ const moveToAdjacentClueEdge = (state, delta) => {
 };
 
 const toggleDirection = (state) => {
+  const puzzle = state.room?.state.puzzle;
+
+  if (!puzzle || state.selection === null) {
+    return;
+  }
+
   const nextDirection = state.direction === "across" ? "down" : "across";
   state.selection = findSelectionForDirection(
-    state.puzzle,
+    puzzle,
     state.selection,
     nextDirection,
   );
-  state.direction = getClueForCell(state.puzzle, state.selection, nextDirection)
+  state.direction = getClueForCell(puzzle, state.selection, nextDirection)
     ? nextDirection
     : state.direction;
 };
 
 const clearCurrentEntry = (state) => {
-  const cell = getCell(state.puzzle, state.selection);
-  const clue = getClueForCell(state.puzzle, state.selection, state.direction);
+  const puzzle = state.room?.state.puzzle;
+
+  if (!puzzle || state.selection === null) {
+    return "none";
+  }
+
+  const roomState = state.room.state;
+  const cell = getCell(puzzle, state.selection);
+  const clue = getClueForCell(puzzle, state.selection, state.direction);
 
   if (cell.isBlock) {
     return;
@@ -762,9 +917,9 @@ const clearCurrentEntry = (state) => {
   const atClueStart = clue?.cells[0] === cell.index;
 
   if (atClueStart) {
-    if (state.entries[cell.index]) {
-      state.entries[cell.index] = "";
-      state.solved = false;
+    if (roomState.entries[cell.index]) {
+      roomState.entries[cell.index] = "";
+      roomState.solved = false;
     }
 
     if (moveToAdjacentClueEdge(state, -1)) {
@@ -775,42 +930,57 @@ const clearCurrentEntry = (state) => {
     return "cleared";
   }
 
-  if (state.entries[cell.index]) {
-    state.entries[cell.index] = "";
-    state.solved = false;
+  if (roomState.entries[cell.index]) {
+    roomState.entries[cell.index] = "";
+    roomState.solved = false;
     return "cleared";
   }
 
   if (moveWithinClue(state, -1)) {
-    state.entries[state.selection] = "";
-    state.solved = false;
+    roomState.entries[state.selection] = "";
+    roomState.solved = false;
     return "cleared";
   }
 
   return "none";
 };
 
-const checkSolved = (state) =>
-  state.puzzle.cells.every((cell) => {
+const checkSolved = (roomState) =>
+  roomState.puzzle.cells.every((cell) => {
     if (cell.isBlock) {
       return true;
     }
 
-    return state.entries[cell.index] === cell.solution;
+    return roomState.entries[cell.index] === cell.solution;
   });
 
 const fillLetter = (state, letter) => {
-  const cell = getCell(state.puzzle, state.selection);
+  const puzzle = state.room?.state.puzzle;
+
+  if (!puzzle || state.selection === null) {
+    return;
+  }
+
+  const roomState = state.room.state;
+  const cell = getCell(puzzle, state.selection);
 
   if (cell.isBlock) {
     return;
   }
 
-  state.entries[cell.index] = letter.toUpperCase();
+  roomState.entries[cell.index] = letter.toUpperCase();
 
-  if (checkSolved(state)) {
-    state.solved = true;
-    state.status = `Puzzle solved in ${formatElapsed(Date.now() - state.startedAt)}.`;
+  if (checkSolved(roomState)) {
+    roomState.solved = true;
+    const elapsed = formatElapsed(Date.now() - roomState.startedAt);
+
+    for (const session of state.room.sessions) {
+      session.status =
+        session === state
+          ? `Puzzle solved in ${elapsed}.`
+          : `Your team solved the puzzle in ${elapsed}.`;
+    }
+
     return;
   }
 
@@ -826,8 +996,8 @@ const isCellIncorrect = (state, cell) =>
   Boolean(
     state.checkMode &&
     !cell.isBlock &&
-    state.entries[cell.index] &&
-    state.entries[cell.index] !== cell.solution,
+    state.room?.state.entries[cell.index] &&
+    state.room.state.entries[cell.index] !== cell.solution,
   );
 
 const getArtForEntry = (entry) => {
@@ -862,46 +1032,72 @@ const paintCellArt = (art, baseCode, number = null) => {
   });
 };
 
-const getCellDisplay = (state, cell, activeClue) => {
+const getPartnerSession = (session) =>
+  session.room
+    ? Array.from(session.room.sessions).find(
+        (otherSession) => otherSession !== session,
+      ) ?? null
+    : null;
+
+const getCellDisplay = (
+  session,
+  cell,
+  activeClue,
+  partnerActiveClue,
+  partnerSelection,
+) => {
   if (cell.isBlock) {
     return paintCellArt(BLOCK_CELL_ART, "48;5;238");
   }
 
   const isInActiveClue = activeClue?.cells.includes(cell.index) ?? false;
-  const isSelected = cell.index === state.selection;
-  const entry = state.entries[cell.index];
+  const isInPartnerClue = partnerActiveClue?.cells.includes(cell.index) ?? false;
+  const isSelected = cell.index === session.selection;
+  const isPartnerSelected = cell.index === partnerSelection;
+  const entry = session.room.state.entries[cell.index];
   const art = getArtForEntry(entry);
-  const isIncorrect = isCellIncorrect(state, cell);
+  const isIncorrect = isCellIncorrect(session, cell);
   const foregroundCode = isIncorrect ? "1;38;5;160" : entry ? "1;30" : "2;37";
   const baseCode = isSelected
     ? `${foregroundCode};48;5;226`
-    : isInActiveClue
-      ? `${foregroundCode};48;5;153`
-      : foregroundCode;
+    : isPartnerSelected
+      ? `${foregroundCode};${PARTNER_SELECTION_BACKGROUND}`
+      : isInActiveClue
+        ? `${foregroundCode};48;5;153`
+      : isInPartnerClue
+        ? `${foregroundCode};${PARTNER_CLUE_BACKGROUND}`
+        : foregroundCode;
 
   return paintCellArt(art, baseCode, cell.number);
 };
 
-const buildBoardLines = (state) => {
+const buildBoardLines = (session) => {
+  const puzzle = session.room.state.puzzle;
   const lines = [];
-  const activeClue = getClueForCell(
-    state.puzzle,
-    state.selection,
-    state.direction,
-  );
-  const innerWidth = state.puzzle.width * CELL_WIDTH;
+  const partnerSession = getPartnerSession(session);
+  const activeClue = getClueForCell(puzzle, session.selection, session.direction);
+  const partnerActiveClue = partnerSession
+    ? getClueForCell(
+        puzzle,
+        partnerSession.selection,
+        partnerSession.direction,
+      )
+    : null;
+  const innerWidth = puzzle.width * CELL_WIDTH;
 
   lines.push(color(`┌${"─".repeat(innerWidth)}┐`, "38;5;245"));
 
-  for (let row = 0; row < state.puzzle.height; row += 1) {
+  for (let row = 0; row < puzzle.height; row += 1) {
     const rowCells = [];
 
-    for (let col = 0; col < state.puzzle.width; col += 1) {
+    for (let col = 0; col < puzzle.width; col += 1) {
       rowCells.push(
         getCellDisplay(
-          state,
-          state.puzzle.cells[row * state.puzzle.width + col],
+          session,
+          puzzle.cells[row * puzzle.width + col],
           activeClue,
+          partnerActiveClue,
+          partnerSession?.selection ?? null,
         ),
       );
     }
@@ -919,12 +1115,13 @@ const buildBoardLines = (state) => {
 };
 
 const buildSelectedClueLines = (state) => {
+  const puzzle = state.room.state.puzzle;
   const activeClue = getClueForCell(
-    state.puzzle,
+    puzzle,
     state.selection,
     state.direction,
   );
-  const totalWidth = state.puzzle.width * CELL_WIDTH + 2;
+  const totalWidth = puzzle.width * CELL_WIDTH + 2;
   const clueLabel = activeClue
     ? `${activeClue.id}. ${activeClue.text}`
     : "No clue selected.";
@@ -969,11 +1166,23 @@ const buildClueWindow = (
 };
 
 const buildPanelLines = (state, panelWidth, termRows) => {
+  const { room } = state;
+  const { puzzle } = room.state;
+  const partnerSession = getPartnerSession(state);
   const headerLines = [
-    color(truncateText(state.puzzle.title, panelWidth), "1;36"),
-    truncateText(`${state.puzzle.author} | ${state.puzzle.date}`, panelWidth),
-    truncateText(`Source: ${state.puzzle.source}`, panelWidth),
-    truncateText(state.puzzle.relativePath, panelWidth),
+    color(truncateText(puzzle.title, panelWidth), "1;36"),
+    truncateText(`${puzzle.author} | ${puzzle.date}`, panelWidth),
+    color(truncateText(`Game pin: ${room.pin}`, panelWidth), "1;35"),
+    truncateText(`Players: ${room.sessions.size}/${MAX_ROOM_PLAYERS}`, panelWidth),
+    truncateText(`Source: ${puzzle.source}`, panelWidth),
+    truncateText(puzzle.relativePath, panelWidth),
+    "",
+  ];
+
+  const presenceLines = [
+    color("Multiplayer", "1;33"),
+    partnerSession ? "Partner: connected" : "Partner: waiting",
+    "Partner: pink clue/cursor",
     "",
   ];
 
@@ -982,6 +1191,7 @@ const buildPanelLines = (state, panelWidth, termRows) => {
     color("Controls", "1;33"),
     "Move:     Arrows",
     "Clear:    Backspace",
+    "Join:     =",
     "Next:     Tab",
     "New:      [",
     "Previous: Shift+Tab",
@@ -990,23 +1200,30 @@ const buildPanelLines = (state, panelWidth, termRows) => {
       ? `Check:    / ${color("(on)", "38;5;240")}`
       : "Check:    /",
   ];
+  const statusLines = wrapText(state.status, panelWidth);
   const clueSectionTitles = [color("Across", "1;33"), color("Down", "1;33")];
   const availableClueRows = Math.max(
     6,
-    termRows - headerLines.length - controls.length - clueSectionTitles.length,
+    termRows -
+      headerLines.length -
+      presenceLines.length -
+      controls.length -
+      statusLines.length -
+      clueSectionTitles.length -
+      2,
   );
   const clueWindowHeight = Math.max(3, Math.floor(availableClueRows / 2));
-  const acrossClue = getClueForCell(state.puzzle, state.selection, "across");
-  const downClue = getClueForCell(state.puzzle, state.selection, "down");
+  const acrossClue = getClueForCell(puzzle, state.selection, "across");
+  const downClue = getClueForCell(puzzle, state.selection, "down");
   const acrossLines = buildClueWindow(
-    state.puzzle.acrossClues,
+    puzzle.acrossClues,
     acrossClue,
     Math.max(8, panelWidth - 2),
     clueWindowHeight,
     state.direction === "across" ? "30;48;5;153" : "1;30;47",
   );
   const downLines = buildClueWindow(
-    state.puzzle.downClues,
+    puzzle.downClues,
     downClue,
     Math.max(8, panelWidth - 2),
     clueWindowHeight,
@@ -1015,12 +1232,238 @@ const buildPanelLines = (state, panelWidth, termRows) => {
 
   return [
     ...headerLines,
+    ...presenceLines,
     clueSectionTitles[0],
     ...acrossLines,
     clueSectionTitles[1],
     ...downLines,
     ...controls,
+    "",
+    color("Status", "1;33"),
+    ...statusLines,
   ];
+};
+
+const buildJoinModalLines = (session) => {
+  const frameCode = "38;5;218";
+  const titleCode = "1;30;48;5;218";
+  const bodyCode = "38;5;255;48;5;236";
+  const innerWidth = JOIN_MODAL_INNER_WIDTH;
+  const pinDisplay =
+    session.joinModal.input.padEnd(ROOM_PIN_LENGTH, ".").slice(0, ROOM_PIN_LENGTH);
+  const message =
+    session.joinModal.error || "Enter the 6-digit game pin to join.";
+
+  const padLine = (text) => padVisibleEnd(text, innerWidth);
+
+  return [
+    color(`╔${"═".repeat(innerWidth)}╗`, frameCode),
+    color(`║${padLine(" Join Multiplayer")}║`, titleCode),
+    color(`║${padLine("")}║`, bodyCode),
+    color(`║${padLine(` Pin: ${pinDisplay}`)}║`, bodyCode),
+    color(`║${padLine("")}║`, bodyCode),
+    color(`║${padLine(truncateText(message, innerWidth))}║`, bodyCode),
+    color(`║${padLine(" Enter confirms, Esc cancels")}║`, bodyCode),
+    color(`╚${"═".repeat(innerWidth)}╝`, frameCode),
+  ];
+};
+
+const renderJoinModal = (session) => {
+  if (!session.joinModal.open) {
+    return;
+  }
+
+  const lines = buildJoinModalLines(session);
+  const { startCol, startRow } = createCenteredLayout(session.termSize, lines);
+
+  lines.forEach((line, index) => {
+    safeWrite(
+      session.stream,
+      `\x1b[${startRow + index};${startCol}H${line}${ansiStyle(0)}`,
+    );
+  });
+};
+
+const renderSession = (session) => {
+  const { cols, rows } = getTerminalSize(session.termSize);
+  const roomState = session.room?.state ?? null;
+
+  if (!roomState) {
+    if (!meetsHardMinimum(session.termSize)) {
+      renderCentered(session.stream, session.termSize, [
+        "Terminal window is too small for crossword.",
+        `Need at least ${HARD_MIN_COLS} columns x ${HARD_MIN_ROWS} rows.`,
+        `Current size: ${cols} x ${rows}.`,
+        "",
+        "Press = to join an existing multiplayer game.",
+        "Enlarge the window and I'll try again.",
+      ]);
+      renderJoinModal(session);
+      return;
+    }
+
+    renderCentered(session.stream, session.termSize, [
+      "Terminal window is too small.",
+      `Current size: ${cols} x ${rows}.`,
+      "",
+      `Checked ${session.searchAttempts} indexed crosswords and couldn't find one that fits.`,
+      "Press = to join an existing multiplayer game.",
+      "Enlarge the window and I'll try again.",
+    ]);
+    renderJoinModal(session);
+    return;
+  }
+
+  if (!puzzleFitsTermSize(roomState.puzzle, session.termSize)) {
+    const minimumSize = getMinimumTermSizeForPuzzle(roomState.puzzle);
+    const canHavePartner = session.room.sessions.size > 1;
+
+    renderCentered(session.stream, session.termSize, [
+      "Terminal window is too small for this crossword.",
+      `Need at least ${minimumSize.cols} columns x ${minimumSize.rows} rows.`,
+      `Current size: ${cols} x ${rows}.`,
+      "",
+      canHavePartner
+        ? "Press [ to start a new shared game that fits both players."
+        : "Press [ to start a new game that fits this window.",
+      "Resize the window to keep playing.",
+    ]);
+    renderJoinModal(session);
+    return;
+  }
+
+  const boardLines = [
+    ...buildBoardLines(session),
+    "",
+    ...buildSelectedClueLines(session),
+  ];
+  const boardWidth = boardLines.reduce(
+    (max, line) => Math.max(max, getVisibleWidth(line)),
+    0,
+  );
+  const panelWidth = Math.min(
+    MAX_PANEL_WIDTH,
+    Math.max(MIN_PANEL_WIDTH, cols - boardWidth - PANEL_GAP.length - 2),
+  );
+
+  renderCentered(
+    session.stream,
+    session.termSize,
+    joinColumns(boardLines, buildPanelLines(session, panelWidth, rows)),
+  );
+  renderJoinModal(session);
+};
+
+const openJoinModal = (session) => {
+  session.joinModal = createJoinModalState();
+  session.joinModal.open = true;
+};
+
+const closeJoinModal = (session) => {
+  session.joinModal = createJoinModalState();
+};
+
+const joinRoomByPin = (session, pin) => {
+  if (!/^\d{6}$/.test(pin)) {
+    return "Enter a 6-digit pin.";
+  }
+
+  const room = MULTIPLAYER_ROOMS.get(pin);
+
+  if (!room) {
+    return `Game ${pin} was not found.`;
+  }
+
+  if (room === session.room) {
+    return "You're already in that game.";
+  }
+
+  if (room.sessions.size >= MAX_ROOM_PLAYERS) {
+    return `Game ${pin} already has ${MAX_ROOM_PLAYERS} players.`;
+  }
+
+  detachSessionFromRoom(session, {
+    notifyRemaining: true,
+    remainingMessage: "Partner left for another game.",
+  });
+  attachSessionToRoom(session, room, `Joined game ${pin}.`);
+
+  for (const roomSession of room.sessions) {
+    if (roomSession !== session) {
+      roomSession.status = "Partner joined your game.";
+    }
+  }
+
+  closeJoinModal(session);
+  renderRoom(room);
+  return "";
+};
+
+const startNewGame = (session) => {
+  if (!session.room) {
+    return ensureRoomForSession(session);
+  }
+
+  const sharedTermSize = getSharedTermSize(session.room);
+
+  if (!meetsHardMinimum(sharedTermSize)) {
+    return false;
+  }
+
+  const result = chooseFittingPuzzle(sharedTermSize, {
+    excludeFilePath: session.room.state.puzzle.filePath,
+  });
+  session.searchAttempts = result.attempts;
+
+  if (!result.puzzle) {
+    return false;
+  }
+
+  session.room.state = createRoomState(result.puzzle);
+
+  for (const roomSession of session.room.sessions) {
+    resetSessionForPuzzle(
+      roomSession,
+      roomSession === session
+        ? "Loaded a new shared crossword."
+        : "Your partner loaded a new shared crossword.",
+    );
+  }
+
+  renderRoom(session.room);
+  return true;
+};
+
+const handleJoinModalInput = (session, token) => {
+  if (token === "\u001b") {
+    closeJoinModal(session);
+    renderSession(session);
+    return;
+  }
+
+  if (token === "\r" || token === "\n") {
+    const error = joinRoomByPin(session, session.joinModal.input);
+
+    if (error) {
+      session.joinModal.error = error;
+      renderSession(session);
+    }
+
+    return;
+  }
+
+  if (token === "\u007f" || token === "\b" || token === "ESC[3~") {
+    session.joinModal.input = session.joinModal.input.slice(0, -1);
+    session.joinModal.error = "";
+    renderSession(session);
+    return;
+  }
+
+  if (/^\d$/.test(token) && session.joinModal.input.length < ROOM_PIN_LENGTH) {
+    session.joinModal.input += token;
+    session.joinModal.error = "";
+    renderSession(session);
+  }
 };
 
 export const createGameSession = ({
@@ -1028,108 +1471,30 @@ export const createGameSession = ({
   stream,
   termSize: initialTermSize,
 }) => {
-  let termSize = initialTermSize;
-  const initializeState = () => {
-    if (!meetsHardMinimum(termSize)) {
-      return {
-        attempts: 0,
-        state: null,
-      };
-    }
-
-    const result = chooseFittingPuzzle(termSize);
-
-    return {
-      attempts: result.attempts,
-      state: result.puzzle ? createSessionState(result.puzzle) : null,
-    };
-  };
-  let { attempts: searchAttempts, state } = initializeState();
-
-  const startNewGame = () => {
-    if (!meetsHardMinimum(termSize)) {
-      return false;
-    }
-
-    const result = chooseFittingPuzzle(termSize, {
-      excludeFilePath: state?.puzzle.filePath ?? null,
-    });
-
-    if (!result.puzzle) {
-      return false;
-    }
-
-    searchAttempts = result.attempts;
-    state = createSessionState(result.puzzle);
-    state.status = "Loaded a new crossword.";
-    return true;
+  const session = {
+    checkMode: false,
+    closeConnection,
+    direction: "across",
+    joinModal: createJoinModalState(),
+    render: () => {},
+    room: null,
+    searchAttempts: 0,
+    selection: null,
+    status: DEFAULT_STATUS,
+    stream,
+    termSize: initialTermSize,
   };
 
-  const render = () => {
-    const { cols, rows } = getTerminalSize(termSize);
-
-    if (!state) {
-      if (!meetsHardMinimum(termSize)) {
-        renderCentered(stream, termSize, [
-          "Terminal window is too small for crossword.",
-          `Need at least ${HARD_MIN_COLS} columns x ${HARD_MIN_ROWS} rows.`,
-          `Current size: ${cols} x ${rows}.`,
-          "",
-          "Enlarge the window and I'll try again.",
-        ]);
-        return;
-      }
-
-      renderCentered(stream, termSize, [
-        "Terminal window is too small.",
-        `Current size: ${cols} x ${rows}.`,
-        "",
-        `Checked ${searchAttempts} indexed crosswords and couldn't find one that fits.`,
-        "Enlarge the window and I'll try again.",
-      ]);
-      return;
-    }
-
-    if (!puzzleFitsTermSize(state.puzzle, termSize)) {
-      const minimumSize = getMinimumTermSizeForPuzzle(state.puzzle);
-
-      renderCentered(stream, termSize, [
-        "Terminal window is too small for this crossword.",
-        `Need at least ${minimumSize.cols} columns x ${minimumSize.rows} rows.`,
-        `Current size: ${cols} x ${rows}.`,
-        "",
-        "Press [ to start a new game that fits this window.",
-        "Resize the window to keep playing.",
-      ]);
-      return;
-    }
-
-    const boardLines = [
-      ...buildBoardLines(state),
-      "",
-      ...buildSelectedClueLines(state),
-    ];
-    const boardWidth = boardLines.reduce(
-      (max, line) => Math.max(max, getVisibleWidth(line)),
-      0,
-    );
-    const panelWidth = Math.min(
-      MAX_PANEL_WIDTH,
-      Math.max(MIN_PANEL_WIDTH, cols - boardWidth - PANEL_GAP.length - 2),
-    );
-
-    renderCentered(
-      stream,
-      termSize,
-      joinColumns(boardLines, buildPanelLines(state, panelWidth, rows)),
-    );
-  };
+  session.render = () => renderSession(session);
 
   return {
     start() {
-      render();
+      ensureRoomForSession(session);
+      renderSession(session);
     },
-    onClose() {},
+    onClose() {
+      detachSessionFromRoom(session, { notifyRemaining: true });
+    },
     onData(data) {
       const input = data.toString("utf8");
 
@@ -1139,101 +1504,114 @@ export const createGameSession = ({
           return;
         }
 
+        if (session.joinModal.open) {
+          handleJoinModalInput(session, token);
+          continue;
+        }
+
+        if (token === "=") {
+          openJoinModal(session);
+          renderSession(session);
+          continue;
+        }
+
         if (token === "[") {
-          if (startNewGame()) {
-            render();
+          if (startNewGame(session)) {
+            if (!session.room || session.room.sessions.size < 2) {
+              renderSession(session);
+            }
             continue;
           }
 
-          if (state) {
-            state.status = "No alternate crossword fits this window.";
-            render();
-          }
+          session.status = session.room?.sessions.size > 1
+            ? "No alternate crossword fits both players."
+            : "No alternate crossword fits this window.";
+          renderSession(session);
 
           continue;
         }
 
-        if (!state) {
+        if (!session.room) {
           continue;
         }
 
         if (token === "\t") {
-          jumpToAdjacentClue(state, 1);
-          render();
+          jumpToAdjacentClue(session, 1);
+          renderRoom(session.room);
           continue;
         }
 
         if (token === "ESC[Z") {
-          jumpToAdjacentClue(state, -1);
-          render();
+          jumpToAdjacentClue(session, -1);
+          renderRoom(session.room);
           continue;
         }
 
         if (token === " ") {
-          toggleDirection(state);
-          render();
+          toggleDirection(session);
+          renderRoom(session.room);
           continue;
         }
 
         if (token === "/") {
-          state.checkMode = !state.checkMode;
-          render();
+          session.checkMode = !session.checkMode;
+          renderSession(session);
           continue;
         }
 
         if (token === "ESC[A") {
-          state.direction = "down";
-          moveSelection(state, -1, 0);
-          render();
+          session.direction = "down";
+          moveSelection(session, -1, 0);
+          renderRoom(session.room);
           continue;
         }
 
         if (token === "ESC[B") {
-          state.direction = "down";
-          moveSelection(state, 1, 0);
-          render();
+          session.direction = "down";
+          moveSelection(session, 1, 0);
+          renderRoom(session.room);
           continue;
         }
 
         if (token === "ESC[C") {
-          state.direction = "across";
-          moveSelection(state, 0, 1);
-          render();
+          session.direction = "across";
+          moveSelection(session, 0, 1);
+          renderRoom(session.room);
           continue;
         }
 
         if (token === "ESC[D") {
-          state.direction = "across";
-          moveSelection(state, 0, -1);
-          render();
+          session.direction = "across";
+          moveSelection(session, 0, -1);
+          renderRoom(session.room);
           continue;
         }
 
         if (token === "\u007f" || token === "\b" || token === "ESC[3~") {
-          const clearResult = clearCurrentEntry(state);
+          const clearResult = clearCurrentEntry(session);
 
           if (clearResult === "cleared") {
-            state.status = "Entry cleared.";
+            session.status = "Entry cleared.";
           }
 
-          render();
+          renderRoom(session.room);
           continue;
         }
 
-        if (/^[a-z]$/i.test(token) && !state.solved) {
-          fillLetter(state, token);
-          render();
+        if (/^[a-z]$/i.test(token) && !session.room.state.solved) {
+          fillLetter(session, token);
+          renderRoom(session.room);
         }
       }
     },
     onResize(nextTermSize) {
-      termSize = nextTermSize;
+      session.termSize = nextTermSize;
 
-      if (!state) {
-        ({ attempts: searchAttempts, state } = initializeState());
+      if (!session.room) {
+        ensureRoomForSession(session);
       }
 
-      render();
+      renderSession(session);
     },
   };
 };
